@@ -1,5 +1,5 @@
 # grav1an
-`grav1an` is a binary which creates psychovisually lossless AV1 video using [Vapoursynth](https://github.com/vapoursynth/vapoursynth), [Av1an](https://github.com/master-of-zen/Av1an), [Grav1synth](https://github.com/rust-av/grav1synth), and [MKVToolNix](https://github.com/nmaier/mkvtoolnix). Currently, it supports the encoders [svt-av1-psy](https://github.com/gianni-rosato/svt-av1-psy) and [rav1e](https://github.com/xiph/rav1e). This was originally a Python script made by Ironclad, so credits to them for creating the original script. The [AV1 Discord Server](https://discord.gg/83dRFDFDp7) has the original script & support.
+`grav1an` is a binary which creates psychovisually optimized AV1 video using [Vapoursynth](https://github.com/vapoursynth/vapoursynth), [Av1an](https://github.com/master-of-zen/Av1an), [Grav1synth](https://github.com/rust-av/grav1synth), and [MKVToolNix](https://github.com/nmaier/mkvtoolnix). Currently, it supports the encoders [svt-av1-psy](https://github.com/gianni-rosato/svt-av1-psy) and [rav1e](https://github.com/xiph/rav1e). This was originally a Python script made by Ironclad, so credits to them for creating the original script. The [AV1 anime server](https://discord.gg/83dRFDFDp7) has the original script & support.
 
 ## Dependencies:
 Bolded dependencies are **required**.
