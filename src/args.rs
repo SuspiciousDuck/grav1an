@@ -1,5 +1,6 @@
 use clap::Parser;
 use std::path::PathBuf;
+use std::thread::available_parallelism;
 
 /// AV1 Encoding Script using VS filters, av1an, opusenc, grav1synth, and mkvmerge
 #[derive(Parser, Debug)]
@@ -74,7 +75,7 @@ pub struct Args {
     #[arg(long, num_args = 0, default_value_t = false)]
     pub dehalo: bool,
     /// Number of av1an workers
-    #[arg(short, long, default_value_t = 16)]
+    #[arg(short, long, default_value_t = available_parallelism().unwrap().get() as u8)]
     pub workers: u8,
     /// Max cache size per vspipe/worker in GB
     #[arg(short, long, default_value_t = 1)]
