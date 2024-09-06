@@ -11,7 +11,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use statrs::statistics::{Distribution, Median, OrderStatistics};
 use std::ffi::{OsStr, OsString};
 use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::os::unix::ffi::OsStrExt;
 use std::process::{exit, Command, Stdio};
 use std::{fmt::Debug, fs::File, path::absolute as abs, path::PathBuf};
 use which::which;
@@ -1107,7 +1106,7 @@ fn get_diff_grain(
     }
     // absolutely disgusting
     let matching_files = cleaned_dir.read_dir().unwrap().map(|f| {
-        String::from_utf8(f.unwrap().path().file_stem().unwrap().as_bytes().to_vec()).unwrap()
+        f.unwrap().path().file_stem().unwrap().to_string_lossy().to_string()
     });
     for chunk in matching_files {
         grain_chunks(&grainy_dir, &cleaned_dir, &encode_dir, &grained_dir, &chunk);
