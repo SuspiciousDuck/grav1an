@@ -100,6 +100,10 @@ pub fn create_torrent(
     }
     let torrent = torrent_build.build().unwrap();
     torrent.write_into_file(&torrent_path).unwrap();
+    let open = open::that(&torrent_path);
+    if open.is_err() {
+        eprintln!("Failed to open {} automatically.", torrent_path.display());
+    }
     println!(
         "Torrent for {} done at {}",
         torrent_files.display(),

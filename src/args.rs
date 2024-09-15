@@ -13,13 +13,13 @@ pub struct Args {
     #[arg(short, long)]
     pub output_directory: PathBuf,
     /// Group name
-    #[arg(short, long, default_value_t = String::from("[Group]"))]
+    #[arg(short, long, default_value_t = String::from("Group"))]
     pub group: String,
     /// Series title
     #[arg(short, long)]
     pub name: String,
     /// Filename suffix
-    #[arg(long, default_value_t = String::from("[1080p.AV1]"))]
+    #[arg(long, default_value_t = String::from("1080p.AV1"))]
     pub suffix: String,
     /// Episode pattern for output (1 = "XX", 2 = "SXXEXX", or string)
     #[arg(long, default_value_t = String::from("1"))]
@@ -34,7 +34,7 @@ pub struct Args {
     #[arg(long, num_args = 0, default_value_t = false)]
     pub no_filter: bool,
     /// Apply rescale, skip if unfamiliar
-    #[arg(long, requires_all(["algo", "height"]), num_args = 0, default_value_t = false)]
+    #[arg(long, requires_all(["algo"]), num_args = 0, default_value_t = false)]
     pub rescale: bool,
     /// Rescale adjust for match centers model
     #[arg(
@@ -50,9 +50,12 @@ pub struct Args {
     /// Frame width used for descale
     #[arg(long, requires = "rescale", default_value = None)]
     pub width: Option<u16>,
-    /// Algorithm used for descale
+    /// Shifts to apply during the descaling and reupscaling, [y,x]
     #[arg(long, requires = "rescale", default_value = None)]
-    pub algo: Option<String>,
+    pub shift: Option<String>,
+    /// Algorithm used for descale
+    #[arg(long, requires = "rescale", required = false)]
+    pub algo: String,
     /// Border padding
     #[arg(long, requires = "rescale", default_value_t = 0)]
     pub borders: u16,
@@ -74,6 +77,12 @@ pub struct Args {
     /// Dehalo/dering
     #[arg(long, num_args = 0, default_value_t = false)]
     pub dehalo: bool,
+    /// Deband strength
+    #[arg(long, default_value_t = 64)]
+    pub deband: u8,
+    /// Use retinex mask for debanding
+    #[arg(long, num_args = 0, default_value_t = false)]
+    pub retinex: bool,
     /// Number of av1an workers
     #[arg(short, long, default_value_t = available_parallelism().unwrap().get() as u8)]
     pub workers: u8,
@@ -110,6 +119,9 @@ pub struct Args {
     /// rav1e-only setting
     #[arg(short, long, default_value_t = 8)]
     pub tiles: u8,
+    /// Manually set other encoder arguments, does not support zone overrides. Implies --single-pass
+    #[arg(short, long, default_value = None)]
+    pub parameters: Option<String>,
     /// Only use 1-pass encoding and static quality
     #[arg(long, num_args = 0, default_value_t = false)]
     pub single_pass: bool,
@@ -146,7 +158,7 @@ pub struct Args {
     #[arg(long, default_value_t = 400)]
     pub photon_noise: u16,
     /// Raws source
-    #[arg(long, default_value_t = String::from("BD"))]
+    #[arg(long, default_value_t = String::from("WEB"))]
     pub raws: String,
     /// Audio source, 1, 2, or both
     #[arg(long, value_parser(["1","2","both"]), requires_ifs = [("both","src2_directory"),("2","src2_directory")], default_value = "1")]
@@ -169,7 +181,7 @@ pub struct Args {
     /// Url for series info
     #[arg(long, default_value = None)]
     pub source_info: Option<String>,
-    /// Torrent contains output folder
+    /// Single batch torrent
     #[arg(short, long, num_args = 0, default_value_t = false)]
     pub batch: bool,
 }

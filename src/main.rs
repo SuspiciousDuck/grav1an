@@ -673,18 +673,19 @@ fn get_encoder_params(args: &Args, vinfo: &Vec<Probe>, speed: Option<u8>, quanti
     } else {
         q.to_string()
     };
+    let params = format!(" {}", args.parameters.as_deref().unwrap_or(" ".into()));
     let (cr, matrix, transfer, primaries) = vinfo[0].color_data(args.encoder == "rav1e");
     let result = if encoder == "svt-av1" {
-        format!("--crf {quantizer} --preset {speed} --tune 3 --sharpness 2 --variance-boost-strength 4 --variance-octile 4 --frame-luma-bias 100 --keyint 0 --enable-dlf 2 --enable-cdef 0 --enable-restoration 0 --enable-tf 0 --color-range {cr} --matrix-coefficients {matrix} --transfer-characteristics {transfer} --color-primaries {primaries}")
+        format!("--crf {quantizer}{params} --preset {speed} --tune 3 --sharpness 2 --variance-boost-strength 4 --variance-octile 4 --frame-luma-bias 100 --keyint 0 --enable-dlf 2 --enable-cdef 0 --enable-restoration 0 --enable-tf 0 --color-range {cr} --matrix-coefficients {matrix} --transfer-characteristics {transfer} --color-primaries {primaries}")
     } else if encoder == "rav1e" {
         let tiles = args.tiles;
-        format!("--quantizer {quantizer} -s {speed} --tiles {tiles} --keyint 0 --no-scene-detection --range {cr} --matrix {matrix} --transfer {transfer} --primaries {primaries}")
+        format!("--quantizer {quantizer}{params} -s {speed} --tiles {tiles} --keyint 0 --no-scene-detection --range {cr} --matrix {matrix} --transfer {transfer} --primaries {primaries}")
     } else if encoder == "x264" {
         format!("-q 0")
     } else {
         String::new()
     };
-    if result == String::new() {
+    if result.is_empty() {
         panic!("Unsupported encoder!");
     }
     return result;
@@ -727,26 +728,31 @@ fn get_filter_string(args: &Args) -> String {
         }
     }
     if !filter_string.is_empty() {
-        filter_string.push_str(", deband with soifunc, dither with vs-tools");
+        filter_string.push_str(", deband with vs-deband");
     } else {
-        filter_string = String::from("Deband with soifunc, dither with vs-tools");
+        filter_string = String::from("Deband with vs-deband");
     }
+    if args.retinex {
+        filter_string.push_str(", grain=0\" + retinex mask: \"rg_mode=0");
+    }
+    filter_string.push_str("\", dither with vs-tools");
     return filter_string;
 }
 
 fn get_rescale_string(args: &Args) -> String {
     let mut rescale_string = String::new();
     if args.rescale {
-        rescale_string = String::from("Descale with vodesfunc: ");
+        rescale_string = String::from("Rescale with vodesfunc: ");
         if args._match {
             rescale_string = format!(
-                "{rescale_string}\"native res with lvsfunc: \"target_height={}\"",
-                args.height.unwrap()
+                "{rescale_string}\"native res with lvsfunc: \"target_height={}, target_width={}\"",
+                args.height.unwrap(),
+                args.width.unwrap()
             );
         } else {
-            rescale_string = format!("{rescale_string}\"height={}", args.height.unwrap());
+            rescale_string = format!("{rescale_string}\"height={}, width={}", args.height.unwrap(), args.width.unwrap());
         }
-        rescale_string = format!("{rescale_string}, kernel={}, border_handling={}\", upscale with vs-scale: \"Waifu2x\", downscale with vs-kernels: \"Hermite(linear=True)\"", args.algo.clone().unwrap(), args.borders);
+        rescale_string = format!("{rescale_string}, kernel={}, border_handling={}\", upscale with vs-scale: \"Waifu2x\", downscale with vs-kernels: \"Hermite(linear=True)\"", args.algo, args.borders);
     }
     return rescale_string;
 }
@@ -764,7 +770,7 @@ fn get_source_string(file: &PathBuf, args: &Args, format: Option<String>) -> Str
         let abspath = abs(&args.input_directory).unwrap();
         let mut root = abspath.components().next().unwrap().as_os_str().to_string_lossy().to_string();
         if !root.ends_with('/') {
-            root = format!("{root}/");
+            root.push('/');
         }
         format!("bs.VideoSource(r'{}', cachepath=r'{}')", abs(&file).unwrap().display(), root)
     } else {
@@ -780,34 +786,35 @@ fn sd_script(vpy_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
     file.write_all(contents.as_bytes()).unwrap();
 }
 
+fn get_descale_dimensions(height: &Option<u16>, width: &Option<u16>) -> (u16, u16) {
+    if height.is_some() && width.is_none() {
+        (height.unwrap(), (height.unwrap() as f64 * 16f64/9f64) as u16)
+    } else if width.is_some() && height.is_none() {
+        ((width.unwrap() as f64 * 9f64/16f64) as u16, width.unwrap())
+    } else {
+        (height.unwrap(), width.unwrap())
+    }
+}
+
 #[rustfmt::skip]
 fn create_vpy_script(vpy_path: &PathBuf, file_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
     let mut file = File::create(vpy_path).unwrap();
     let source_string = get_source_string(&vinfo[0].file, &args, Some(vinfo[0].pix_fmt(true)));
-    let mut contents = format!("import vapoursynth as vs\nfrom vstools import initialize_clip, depth\nimport lvsfunc as lvs\nfrom vodesfunc import DescaleTarget\nimport vskernels as vsk\nfrom vsscale import Waifu2x\nfrom vsdenoise import nl_means, MVTools, MVToolsPresets\nfrom vsdehalo import fine_dehalo\nfrom soifunc import retinex_deband\ncore = vs.core\ncore.max_cache_size = {}\nsrc = core.{source_string}\n# clip1 = src[1004:10893]\n# clip2 = src[11194:44161]\n# src = clip1+clip2\n# src = core.vivtc.VFM(src, 1, mode=3) # 60i to 30p\n# src = core.vivtc.VDecimate(src, 5) # 30p to 24p\nsrc = initialize_clip(src)\n", args.mem as u32 * 1024);
+    let mut contents = format!("import vapoursynth as vs\nfrom vstools import initialize_clip, depth\nimport lvsfunc as lvs\nfrom vodesfunc import RescaleBuilder\nimport vskernels as vsk\nfrom vsscale import Waifu2x\nfrom vsdenoise import nl_means, MVTools, MVToolsPresets\nfrom vsdehalo import fine_dehalo\nfrom vsdeband import F3kdb, masked_deband\ncore = vs.core\ncore.max_cache_size = {}\nsrc = core.{source_string}\n# clip1 = src[1004:10893]\n# clip2 = src[11194:44161]\n# src = clip1+clip2\n# src = core.vivtc.VFM(src, 1, mode=3) # 60i to 30p\n# src = core.vivtc.VDecimate(src, 5) # 30p to 24p\nsrc = initialize_clip(src)\n", args.mem as u32 * 1024);
+    let (descale_height, descale_width) = get_descale_dimensions(&args.height, &args.width);
     if args.rescale {
-        let mut rescale_string = String::new();
-        if args._match {
-            if args.height.is_some() {
-                contents = format!("{contents}native_res = lvs.get_match_centers_scaling(src, target_height={}) # Disable for integer scaling and set height in DescaleTarget\n", args.height.unwrap());
-            } else if args.width.is_some() {
-                contents = format!("{contents}native_res = lvs.get_match_centers_scaling(src, target_width={}) # Disable for integer scaling and set height in DescaleTarget\n", args.width.unwrap());
-            }
-            rescale_string = format!("**native_res");
+        let mut rescale_string = if args._match {
+            let target_string = format!("target_height={descale_height}, target_width={descale_width},");
+            contents = format!("{contents}native_res = lvs.get_match_centers_scaling(src, {target_string}) # Disable for integer scaling and set height in DescaleTarget\n");
+            format!("**native_res")
         } else {
-            if args.height.is_some() {
-                rescale_string = format!("height={}", args.height.unwrap());
-            }
-            if args.width.is_some() {
-                if rescale_string != "" {
-                    rescale_string = format!(", width={}", args.width.unwrap());
-                } else {
-                    rescale_string = format!("width={}", args.width.unwrap());
-                }
-            }
+            format!("height={descale_height}, width={descale_width}")
+        };
+        rescale_string = format!("{rescale_string}, kernel=vsk.{}, border_handling={}, upscaler=Waifu2x(cuda=\"trt\", fp16={}, tiles={}), downscaler=vsk.Hermite(linear=True)", args.algo, args.borders, args.fp16, args.dstiles);
+        if args.shift.is_some() {
+            rescale_string = format!("{rescale_string}, shift={}", args.shift.as_ref().unwrap());
         }
-        rescale_string = format!("{rescale_string}, kernel=vsk.{}, border_handling={}, upscaler=Waifu2x(cuda=\"trt\", fp16={}, tiles={}), downscaler=vsk.Hermite(linear=True)", args.algo.as_ref().unwrap(), args.borders, args.fp16, args.dstiles);
-        contents = format!("{contents}rescale = DescaleTarget({rescale_string}).generate_clips(src) # border_handling=1 for bad borders\nsrc = rescale.get_upscaled(src)");
+        contents = format!("{contents}builder, src = (\nRescaleBuilder(src)\n.descale(vsk.{}(border_handling={}), {rescale_string})\n.double(Waifu2x(cuda=\"trt\", fp16={}, tiles={}))\n.errormask()\n.linemask()\n.downscale(vsk.Hermite(linear=True))\n.final()\n)\n", args.algo, args.borders, args.fp16, args.dstiles);
     }
     if !args.no_denoise {
         let mut denoise_string = format!("strength={}, tr=2, sr=[3,2,2], planes=[0,1,2]", args.denoise);
@@ -819,7 +826,12 @@ fn create_vpy_script(vpy_path: &PathBuf, file_path: &PathBuf, args: &Args, vinfo
     if args.dehalo {
         contents = format!("{contents}src = fine_dehalo(src, planes=[0,1,2])\n");
     }
-    contents = format!("{contents}deband = retinex_deband(src, 16)\ndown = depth(deband, 10)\ndown.set_output(0)\n# audio = core.bs.AudioSource(r'{}', cachepath=r'{}/')\n# start1 = round(1004*48*1001/30) # Values based on audio sample rate. Multiply video frame number by sample rate in kHz/original framerate\n# end1 = round(10893*48*1001/30)\n# start2 = round(11194*48*1001/30)\n# end2 = round(44161*48*1001/30)\n# a1 = audio[start1:end1]\n# a2 = audio[start2:end2]\n# audio=a1+a2\n# audio.set_output(1)", file_path.display(), args.input_directory.display());
+    let deband_string: &'static str = if args.retinex {
+        "masked_deband(src, grain=0, rg_mode=0"
+    } else {
+        "F3kdb.deband(src"
+    };
+    contents = format!("{contents}deband = {deband_string}, thr={}, planes=[0,1,2])\ndown = depth(deband, 10)\ndown.set_output(0)\n# audio = core.bs.AudioSource(r'{}', cachepath=r'{}/')\n# start1 = round(1004*48*1001/30) # Values based on audio sample rate. Multiply video frame number by sample rate in kHz/original framerate\n# end1 = round(10893*48*1001/30)\n# start2 = round(11194*48*1001/30)\n# end2 = round(44161*48*1001/30)\n# a1 = audio[start1:end1]\n# a2 = audio[start2:end2]\n# audio=a1+a2\n# audio.set_output(1)", args.deband, file_path.display(), args.input_directory.display());
     file.write_all(contents.as_bytes()).unwrap();
 }
 
@@ -1164,6 +1176,10 @@ fn mux_file(
         "--default-duration", format!("0:{}p", vinfo[0].fps()), "-A", "-S",
         video_path.to_str().unwrap()
     ];
+    let title = vinfo[0].stream.tags.title.as_ref();
+    if title.is_some() {
+        arguments = [vec_into!["--title", title.unwrap()], arguments].concat();
+    }
     let mut audio_files = Vec::new();
     let mut unique_files: HashSet<PathBuf> = HashSet::new();
     for track in ainfo {
@@ -1242,7 +1258,7 @@ fn process_command(args: Args) {
         }
         let episode_number = episode_number_try.unwrap();
         println!("Episode {episode_number}");
-        let filename_output = format!("{} {} - {episode_number} {}", args.group, args.name, args.suffix);
+        let filename_output = format!("[{}] {} - {episode_number} [{}]", args.group, args.name, args.suffix);
         let output_path = args.output_directory.clone().join(format!("{filename_output}.mkv"));
         println!("Output path: {}", output_path.display());
         if args.batch {
@@ -1329,7 +1345,7 @@ fn process_command(args: Args) {
             if scenes.try_exists().is_ok_and(|b| b == false) {
                 scene_detection(&scene_detect, &encode, &scenes, &temp, &args, &vinfo);
             }
-            if !args.single_pass {
+            if !args.single_pass && args.parameters.is_none() {
                 if scenes_over.try_exists().is_ok_and(|b| b == false) {
                     let scenes_info_read = File::open(&scenes).unwrap();
                     let mut scenes_info: ScenesInfo = serde_json::from_reader(&scenes_info_read).unwrap();
