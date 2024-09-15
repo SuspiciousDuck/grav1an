@@ -752,7 +752,7 @@ fn get_rescale_string(args: &Args) -> String {
         } else {
             rescale_string = format!("{rescale_string}\"height={}, width={}", args.height.unwrap(), args.width.unwrap());
         }
-        rescale_string = format!("{rescale_string}, kernel={}, border_handling={}\", upscale with vs-scale: \"Waifu2x\", downscale with vs-kernels: \"Hermite(linear=True)\"", args.algo, args.borders);
+        rescale_string = format!("{rescale_string}, kernel={}, border_handling={}\", upscale with vs-scale: \"Waifu2x\", downscale with vs-kernels: \"Hermite(linear=True)\"", args.algo.as_ref().unwrap(), args.borders);
     }
     return rescale_string;
 }
@@ -810,11 +810,11 @@ fn create_vpy_script(vpy_path: &PathBuf, file_path: &PathBuf, args: &Args, vinfo
         } else {
             format!("height={descale_height}, width={descale_width}")
         };
-        rescale_string = format!("{rescale_string}, kernel=vsk.{}, border_handling={}, upscaler=Waifu2x(cuda=\"trt\", fp16={}, tiles={}), downscaler=vsk.Hermite(linear=True)", args.algo, args.borders, args.fp16, args.dstiles);
+        rescale_string = format!("{rescale_string}, kernel=vsk.{}, border_handling={}, upscaler=Waifu2x(cuda=\"trt\", fp16={}, tiles={}), downscaler=vsk.Hermite(linear=True)", args.algo.as_ref().unwrap(), args.borders, args.fp16, args.dstiles);
         if args.shift.is_some() {
             rescale_string = format!("{rescale_string}, shift={}", args.shift.as_ref().unwrap());
         }
-        contents = format!("{contents}builder, src = (\nRescaleBuilder(src)\n.descale(vsk.{}(border_handling={}), {rescale_string})\n.double(Waifu2x(cuda=\"trt\", fp16={}, tiles={}))\n.errormask()\n.linemask()\n.downscale(vsk.Hermite(linear=True))\n.final()\n)\n", args.algo, args.borders, args.fp16, args.dstiles);
+        contents = format!("{contents}builder, src = (\nRescaleBuilder(src)\n.descale(vsk.{}(border_handling={}), {rescale_string})\n.double(Waifu2x(cuda=\"trt\", fp16={}, tiles={}))\n.errormask()\n.linemask()\n.downscale(vsk.Hermite(linear=True))\n.final()\n)\n", args.algo.as_ref().unwrap(), args.borders, args.fp16, args.dstiles);
     }
     if !args.no_denoise {
         let mut denoise_string = format!("strength={}, tr=2, sr=[3,2,2], planes=[0,1,2]", args.denoise);

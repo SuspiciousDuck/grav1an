@@ -54,8 +54,8 @@ pub struct Args {
     #[arg(long, requires = "rescale", default_value = None)]
     pub shift: Option<String>,
     /// Algorithm used for descale
-    #[arg(long, requires = "rescale", required = false)]
-    pub algo: String,
+    #[arg(long, requires = "rescale", default_value = None)]
+    pub algo: Option<String>,
     /// Border padding
     #[arg(long, requires = "rescale", default_value_t = 0)]
     pub borders: u16,
