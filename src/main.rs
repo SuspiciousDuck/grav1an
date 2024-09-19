@@ -63,7 +63,9 @@ struct ZoneOverrides {
 #[derive(Deserialize, Clone, Debug)]
 struct Stream {
     index: u8,
+    #[serde(default)]
     codec_name: String,
+    #[serde(default)]
     codec_type: String,
     avg_frame_rate: Option<String>,
     start_pts: u16,
@@ -296,7 +298,7 @@ fn check_audio_encoding(input_directory: &PathBuf) -> String {
     let mut opus_string: String = String::new();
     for path in input_directory.read_dir().unwrap() {
         let dir_entry = path.unwrap();
-        if dir_entry.path().extension().unwrap() != "opus" {
+        if !dir_entry.path().is_file() || dir_entry.path().extension().unwrap() != "opus" {
             continue;
         }
         let ffprobe_input = ffprobe(&dir_entry.path());
@@ -313,6 +315,9 @@ fn check_audio_encoding(input_directory: &PathBuf) -> String {
 
 #[rustfmt::skip]
 fn is_video(file: &PathBuf) -> bool {
+    if !file.is_file() {
+        return false;
+    }
     let tmp_str = file.extension().unwrap();
     let video_extensions: Vec<&'static str> = vec!["mkv", "mp4", "webm", "avi", "mov", "ts", "m2t"];
     return video_extensions.iter().any(|extension| tmp_str == *extension);
@@ -801,8 +806,8 @@ fn create_vpy_script(vpy_path: &PathBuf, file_path: &PathBuf, args: &Args, vinfo
     let mut file = File::create(vpy_path).unwrap();
     let source_string = get_source_string(&vinfo[0].file, &args, Some(vinfo[0].pix_fmt(true)));
     let mut contents = format!("import vapoursynth as vs\nfrom vstools import initialize_clip, depth\nimport lvsfunc as lvs\nfrom vodesfunc import RescaleBuilder\nimport vskernels as vsk\nfrom vsscale import Waifu2x\nfrom vsdenoise import nl_means, MVTools, MVToolsPresets\nfrom vsdehalo import fine_dehalo\nfrom vsdeband import F3kdb, masked_deband\ncore = vs.core\ncore.max_cache_size = {}\nsrc = core.{source_string}\n# clip1 = src[1004:10893]\n# clip2 = src[11194:44161]\n# src = clip1+clip2\n# src = core.vivtc.VFM(src, 1, mode=3) # 60i to 30p\n# src = core.vivtc.VDecimate(src, 5) # 30p to 24p\nsrc = initialize_clip(src)\n", args.mem as u32 * 1024);
-    let (descale_height, descale_width) = get_descale_dimensions(&args.height, &args.width);
     if args.rescale {
+        let (descale_height, descale_width) = get_descale_dimensions(&args.height, &args.width);
         let mut rescale_string = if args._match {
             let target_string = format!("target_height={descale_height}, target_width={descale_width},");
             contents = format!("{contents}native_res = lvs.get_match_centers_scaling(src, {target_string}) # Disable for integer scaling and set height in DescaleTarget\n");
