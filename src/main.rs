@@ -929,6 +929,9 @@ fn encode_file(scene_detect: &PathBuf, script: &PathBuf, encode: &PathBuf, temp:
         args.push("--keep");
     }
     Command::new(get_binary("av1an")).args(args).spawn().unwrap().wait().unwrap();
+    if PathBuf::from(encode).try_exists().is_ok_and(|b| b == false) {
+        panic!("Av1an failed to encode file!");
+    }
 }
 
 fn get_ssimulacra2(src: &PathBuf, distorted: &PathBuf, scenes_info: &mut ScenesInfo, quantizer: f32, cycle: u8, cr: &String, matrix: &String, transfer: &String, primaries: &String) {
@@ -1256,14 +1259,24 @@ fn process_command(args: Args) {
             continue;
         }
         println!("{}", dir_entry.path().display());
-        let episode_number_try = extract_episode_number(&base, args.episode_pattern.clone(), Some(args.season.clone()));
-        if episode_number_try.is_err() {
+        let episode_number_try = if !args.not_show {
+            extract_episode_number(&base, args.episode_pattern.clone(), Some(args.season.clone()))
+        } else {
+            Err("Argument 'not_show' is set!".into())
+        };
+        if episode_number_try.is_err() && !args.not_show {
             println!("Failed to get episode number from {base:#?}");
             continue;
         }
-        let episode_number = episode_number_try.unwrap();
-        println!("Episode {episode_number}");
-        let filename_output = format!("[{}] {} - {episode_number} [{}]", args.group, args.name, args.suffix);
+        let episode_number = episode_number_try.unwrap_or("".into());
+        if !args.not_show {
+            println!("Episode {episode_number}");
+        }
+        let filename_output = if !args.not_show {
+            format!("[{}] {} - {episode_number} [{}]", args.group, args.name, args.suffix)
+        } else {
+            format!("[{}] {} [{}]", args.group, args.name, args.suffix)
+        };
         let output_path = args.output_directory.clone().join(format!("{filename_output}.mkv"));
         println!("Output path: {}", output_path.display());
         if args.batch {
@@ -1286,9 +1299,14 @@ fn process_command(args: Args) {
             let mut temp_files = args.src2_directory.clone().unwrap().read_dir().unwrap()
                 .filter(|file| {
                     let hi = file.as_ref().unwrap().file_name();
+                    let matches = if !args.not_show {
+                        match_episode(&hi, episode_number.clone(), args.season.clone())
+                    } else {
+                        file.as_ref().unwrap().path().file_stem().unwrap() == base
+                    };
                     is_video(&file.as_ref().unwrap().path())
                         && !is_temporary_file(&hi)
-                        && match_episode(&hi, episode_number.clone(), args.season.clone())
+                        && matches
                 }).peekable();
             if temp_files.peek().is_some() {
                 let mut temp_list: Vec<PathBuf> = vec![];

@@ -24,6 +24,9 @@ pub struct Args {
     /// Episode pattern for output (1 = "XX", 2 = "SXXEXX", or string)
     #[arg(long, default_value_t = String::from("1"))]
     pub episode_pattern: String,
+    /// Skips episode check
+    #[arg(long, num_args = 0, default_value_t = false)]
+    pub not_show: bool,
     /// Set season for pattern 2
     #[arg(long, default_value_t = String::from("01"))]
     pub season: String,
@@ -34,7 +37,7 @@ pub struct Args {
     #[arg(long, num_args = 0, default_value_t = false)]
     pub no_filter: bool,
     /// Apply rescale, skip if unfamiliar
-    #[arg(long, requires_all(["algo"]), num_args = 0, default_value_t = false)]
+    #[arg(long, num_args = 0, default_value_t = false)]
     pub rescale: bool,
     /// Rescale adjust for match centers model
     #[arg(
