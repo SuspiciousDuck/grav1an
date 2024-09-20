@@ -19,10 +19,8 @@ Bolded dependencies are **required**.
 * [Grav1synth](https://github.com/rust-av/grav1synth) (required if `--no-grain` is unset)
 * [opus-tools](https://github.com/xiph/opus-tools) (required for encoding opus)
 * **[BestSource](https://github.com/vapoursynth/bestsource)/[LSMASHSource](https://github.com/HomeOfAviSynthPlusEvolution/L-SMASH-Works)/[dgdecnv](https://www.rationalqm.us/dgdecnv/dgdecnv.html)** (at least one required)
-* [descale](https://github.com/Jaded-Encoding-Thaumaturgy/vapoursynth-descale) (required for scaling)
-* [resize2](https://github.com/Jaded-Encoding-Thaumaturgy/vapoursynth-resize2) (required for scaling)
 * [vs-mlrt](https://github.com/AmusementClub/vs-mlrt) (required for scaling)
-* **[vsjet](https://github.com/Jaded-Encoding-Thaumaturgy/vs-jet)**
+* [vsjet](https://github.com/Jaded-Encoding-Thaumaturgy/vs-jet) (required for scaling)
 * [vodesfunc](https://github.com/Vodes/vodesfunc) (required for scaling)
 * [lvsfunc](https://github.com/Jaded-Encoding-Thaumaturgy/lvsfunc) (required for scaling)
 ### Make sure that all binary dependencies are in your PATH environment variable.

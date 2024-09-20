@@ -122,8 +122,8 @@ pub struct Args {
     /// rav1e-only setting
     #[arg(short, long, default_value_t = 8)]
     pub tiles: u8,
-    /// Manually set other encoder arguments, does not support zone overrides. Implies --single-pass
-    #[arg(short, long, default_value = None)]
+    /// Manually set extra encoder arguments, includes zone overrides
+    #[arg(short, num_args = 1, allow_hyphen_values = true, long, default_value = None)]
     pub parameters: Option<String>,
     /// Only use 1-pass encoding and static quality
     #[arg(long, num_args = 0, default_value_t = false)]

@@ -805,8 +805,10 @@ fn get_descale_dimensions(height: &Option<u16>, width: &Option<u16>) -> (u16, u1
 fn create_vpy_script(vpy_path: &PathBuf, file_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
     let mut file = File::create(vpy_path).unwrap();
     let source_string = get_source_string(&vinfo[0].file, &args, Some(vinfo[0].pix_fmt(true)));
-    let mut contents = format!("import vapoursynth as vs\nfrom vstools import initialize_clip, depth\nimport lvsfunc as lvs\nfrom vodesfunc import RescaleBuilder\nimport vskernels as vsk\nfrom vsscale import Waifu2x\nfrom vsdenoise import nl_means, MVTools, MVToolsPresets\nfrom vsdehalo import fine_dehalo\nfrom vsdeband import F3kdb, masked_deband\ncore = vs.core\ncore.max_cache_size = {}\nsrc = core.{source_string}\n# clip1 = src[1004:10893]\n# clip2 = src[11194:44161]\n# src = clip1+clip2\n# src = core.vivtc.VFM(src, 1, mode=3) # 60i to 30p\n# src = core.vivtc.VDecimate(src, 5) # 30p to 24p\nsrc = initialize_clip(src)\n", args.mem as u32 * 1024);
+    let mut imports = format!("import vapoursynth as vs\nfrom vstools import initialize_clip, depth\nfrom vsdeband import F3kdb, masked_deband\n");
+    let mut contents = format!("core = vs.core\ncore.max_cache_size = {}\nsrc = core.{source_string}\n# clip1 = src[1004:10893]\n# clip2 = src[11194:44161]\n# src = clip1+clip2\n# src = core.vivtc.VFM(src, 1, mode=3) # 60i to 30p\n# src = core.vivtc.VDecimate(src, 5) # 30p to 24p\nsrc = initialize_clip(src)\n", args.mem as u32 * 1024);
     if args.rescale {
+        imports = format!("{imports}import lvsfunc as lvs\nimport vskernels as vsk\nfrom vodesfunc import RescaleBuilder\nfrom vsscale import Waifu2x\n");
         let (descale_height, descale_width) = get_descale_dimensions(&args.height, &args.width);
         let mut rescale_string = if args._match {
             let target_string = format!("target_height={descale_height}, target_width={descale_width},");
@@ -822,6 +824,7 @@ fn create_vpy_script(vpy_path: &PathBuf, file_path: &PathBuf, args: &Args, vinfo
         contents = format!("{contents}builder, src = (\nRescaleBuilder(src)\n.descale(vsk.{}(border_handling={}), {rescale_string})\n.double(Waifu2x(cuda=\"trt\", fp16={}, tiles={}))\n.errormask()\n.linemask()\n.downscale(vsk.Hermite(linear=True))\n.final()\n)\n", args.algo.as_ref().unwrap(), args.borders, args.fp16, args.dstiles);
     }
     if !args.no_denoise {
+        imports = format!("{imports}from vsdenoise import nl_means, MVTools, MVToolsPresets\n");
         let mut denoise_string = format!("strength={}, tr=2, sr=[3,2,2], planes=[0,1,2]", args.denoise);
         if args.ref_calc {
             denoise_string = format!("{denoise_string}, ref=MVTools.denoise(src, **MVToolsPresets.FAST)");
@@ -829,6 +832,7 @@ fn create_vpy_script(vpy_path: &PathBuf, file_path: &PathBuf, args: &Args, vinfo
         contents = format!("{contents}src = nl_means(src, {denoise_string}) # smaller window size for chroma subsampling\n");
     }
     if args.dehalo {
+        imports = format!("{imports}from vsdehalo import fine_dehalo\n");
         contents = format!("{contents}src = fine_dehalo(src, planes=[0,1,2])\n");
     }
     let deband_string: &'static str = if args.retinex {
@@ -836,7 +840,7 @@ fn create_vpy_script(vpy_path: &PathBuf, file_path: &PathBuf, args: &Args, vinfo
     } else {
         "F3kdb.deband(src"
     };
-    contents = format!("{contents}deband = {deband_string}, thr={}, planes=[0,1,2])\ndown = depth(deband, 10)\ndown.set_output(0)\n# audio = core.bs.AudioSource(r'{}', cachepath=r'{}/')\n# start1 = round(1004*48*1001/30) # Values based on audio sample rate. Multiply video frame number by sample rate in kHz/original framerate\n# end1 = round(10893*48*1001/30)\n# start2 = round(11194*48*1001/30)\n# end2 = round(44161*48*1001/30)\n# a1 = audio[start1:end1]\n# a2 = audio[start2:end2]\n# audio=a1+a2\n# audio.set_output(1)", args.deband, file_path.display(), args.input_directory.display());
+    contents = format!("{imports}{contents}deband = {deband_string}, thr={}, planes=[0,1,2])\ndown = depth(deband, 10)\ndown.set_output(0)\n# audio = core.bs.AudioSource(r'{}', cachepath=r'{}/')\n# start1 = round(1004*48*1001/30) # Values based on audio sample rate. Multiply video frame number by sample rate in kHz/original framerate\n# end1 = round(10893*48*1001/30)\n# start2 = round(11194*48*1001/30)\n# end2 = round(44161*48*1001/30)\n# a1 = audio[start1:end1]\n# a2 = audio[start2:end2]\n# audio=a1+a2\n# audio.set_output(1)", args.deband, file_path.display(), args.input_directory.display());
     file.write_all(contents.as_bytes()).unwrap();
 }
 
@@ -1016,30 +1020,35 @@ fn zone_overrides(
                 continue;
             }
             if args.encoder == "rav1e" {
-                let params: Vec<&str> = vec_into![
-                    "--quantizer", q.as_str(),
-                    "-s", speed.as_str(),
-                    "--tiles", tiles.as_str(),
+                let params: Vec<String> = vec_into![
+                    "--quantizer", q,
+                    "-s", speed,
+                    "--tiles", tiles,
                     "--keyint", "0",
                     "--no-scene-detection",
-                    "--range", cr.as_str(),
-                    "--matrix", matrix.as_str(),
-                    "--transfers", transfer.as_str(),
-                    "--primaries", primaries.as_str()
+                    "--range", cr,
+                    "--matrix", matrix,
+                    "--transfers", transfer,
+                    "--primaries", primaries
                 ];
+                let parameters = if args.parameters.is_some() {
+                    [params, args.parameters.as_ref().unwrap().split(" ").map(String::from).collect()].concat()
+                } else {
+                    params
+                };
                 scene_o.zone_overrides = Some(ZoneOverrides {
                     encoder: "rav1e".to_string(),
                     passes: 1,
-                    video_params: params.into_iter().map(|a| a.to_string()).collect(),
+                    video_params: parameters,
                     photon_noise: None,
                     extra_split_sec: 10,
                     min_scene_len: 24,
                 });
                 break;
             } else {
-                let params: Vec<&str> = vec![
-                    "--crf", q.as_str(),
-                    "--preset", speed.as_str(),
+                let params: Vec<String> = vec_into![
+                    "--crf", q,
+                    "--preset", speed,
                     "--tune", "3",
                     "--sharpness", "2",
                     "--variance-boost-strength", "4",
@@ -1050,15 +1059,20 @@ fn zone_overrides(
                     "--enable-cdef", "0",
                     "--enable-restoration", "0",
                     "--enable-tf", "0",
-                    "--color-range", cr.as_str(),
-                    "--matrix-coefficients", matrix.as_str(),
-                    "--transfer-characteristics", transfer.as_str(),
-                    "--color-primaries", primaries.as_str(),
+                    "--color-range", cr,
+                    "--matrix-coefficients", matrix,
+                    "--transfer-characteristics", transfer,
+                    "--color-primaries", primaries
                 ];
+                let parameters = if args.parameters.is_some() {
+                    [params, args.parameters.as_ref().unwrap().split(' ').map(String::from).collect()].concat()
+                } else {
+                    params
+                };
                 scene_o.zone_overrides = Some(ZoneOverrides {
                     encoder: "svt_av1".to_string(),
                     passes: 1,
-                    video_params: params.into_iter().map(|a| a.to_string()).collect(),
+                    video_params: parameters,
                     photon_noise: None,
                     extra_split_sec: 10,
                     min_scene_len: 24,
@@ -1069,6 +1083,64 @@ fn zone_overrides(
     }
     let writer = File::create(scenes_over).unwrap();
     serde_json::to_writer(writer, &scenes_o).unwrap();
+}
+
+fn validate_overrides(scenes_path: &PathBuf, args: &Args, cr: &String, matrix: &String, transfer: &String, primaries: &String,) {
+    if args.parameters.is_none() {
+        return;
+    }
+    let scenes_o_read = File::open(scenes_path).unwrap();
+    let mut scenes: ScenesInfo = serde_json::from_reader(scenes_o_read).unwrap();
+    for scene in &mut scenes.scenes {
+        if scene.zone_overrides.is_none() {
+            continue
+        }
+        let overrides = scene.zone_overrides.as_mut().unwrap();
+        let q_32 = scene.final_quantizer.unwrap();
+        let (q, speed, tiles) = (
+            q_32.to_string(),
+            args.speed.to_string(),
+            args.tiles.to_string(),
+        );
+        if overrides.encoder == "rav1e" {
+            let params: Vec<String> = vec_into![
+                "--quantizer", q,
+                "-s", speed,
+                "--tiles", tiles,
+                "--keyint", "0",
+                "--no-scene-detection",
+                "--range", cr,
+                "--matrix", matrix,
+                "--transfers", transfer,
+                "--primaries", primaries
+            ];
+            let parameters = [params, args.parameters.as_ref().unwrap().split(" ").map(String::from).collect()].concat();
+            overrides.video_params = parameters;
+        } else {
+            let params: Vec<String> = vec_into![
+                "--crf", q,
+                "--preset", speed,
+                "--tune", "3",
+                "--sharpness", "2",
+                "--variance-boost-strength", "4",
+                "--variance-octile", "4",
+                "--frame-luma-bias", "100",
+                "--keyint", "0",
+                "--enable-dlf", "2",
+                "--enable-cdef", "0",
+                "--enable-restoration", "0",
+                "--enable-tf", "0",
+                "--color-range", cr,
+                "--matrix-coefficients", matrix,
+                "--transfer-characteristics", transfer,
+                "--color-primaries", primaries
+            ];
+            let parameters = [params, args.parameters.as_ref().unwrap().split(' ').map(String::from).collect()].concat();
+            overrides.video_params = parameters;
+        }
+    }
+    let writer = File::create(scenes_path).unwrap();
+    serde_json::to_writer(writer, &scenes).unwrap();
 }
 
 #[rustfmt::skip]
@@ -1412,6 +1484,9 @@ fn process_command(args: Args) {
                 scenes_file = scenes_over.clone();
             } else {
                 scenes_file = scenes.clone();
+            }
+            if args.parameters.is_some() {
+                validate_overrides(&scenes_file, &args, &cr, &matrix, &transfer, &primaries);
             }
             encode_file(&scene_detect, &script, &encode, &temp, &scenes_file, Some(args.speed), Some(args.quantizer), None, true, &args, &vinfo);
         }
