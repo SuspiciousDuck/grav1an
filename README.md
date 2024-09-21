@@ -23,6 +23,8 @@ Bolded dependencies are **required**.
 * [vsjet](https://github.com/Jaded-Encoding-Thaumaturgy/vs-jet) (required for scaling)
 * [vodesfunc](https://github.com/Vodes/vodesfunc) (required for scaling)
 * [lvsfunc](https://github.com/Jaded-Encoding-Thaumaturgy/lvsfunc) (required for scaling)
+* [resize2](https://github.com/Jaded-Encoding-Thaumaturgy/vapoursynth-resize2) (required for scaling)
+* [descale](https://github.com/Jaded-Encoding-Thaumaturgy/vapoursynth-descale) (required for scaling)
 ### Make sure that all binary dependencies are in your PATH environment variable.
 ## Installing:
 1. Install Cargo if you haven't already.
