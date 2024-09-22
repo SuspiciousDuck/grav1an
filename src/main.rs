@@ -599,11 +599,11 @@ fn get_info(file_path: &PathBuf, src2_paths: &Option<PathBuf>, args: &Args) -> (
         }
     }
     audio_streams = filter_redundant_tracks(&mut audio_streams);
-    let audio_order: Vec<&'static str> = vec!["ja", "en", "es", "ar", "fr", "de", "it", "pt", "pl", "nl", "nb", "fi", "tr", "sv", "el", "he", "ro", "id", "th", "ko", "da", "zh", "vi", "uk", "ru", "hu", "cs", "hr", "ms", "hi"];
-    audio_streams.sort_by(|a, b| {audio_order.iter().position(|l| *l == a.language().to_639_1().unwrap()).unwrap_or(audio_order.len()).cmp(&audio_order.iter().position(|l| *l == b.language().to_639_1().unwrap()).unwrap_or(audio_order.len()))});
+    let audio_order: Vec<&'static str> = vec!["jpn", "eng", "spa", "ara", "fra", "deu", "ita", "por", "pol", "nld", "nob", "fin", "tur", "swe", "ell", "heb", "ron", "ind", "tha", "kor", "dan", "chi", "vie", "ukr", "rus", "hun", "ces", "hrv", "msa", "hin"];
+    audio_streams.sort_by(|a, b| {audio_order.iter().position(|l| *l == a.language().to_639_3()).unwrap_or(audio_order.len()).cmp(&audio_order.iter().position(|l| *l == b.language().to_639_3()).unwrap_or(audio_order.len()))});
     subtitle_streams = filter_redundant_tracks(&mut subtitle_streams);
-    let sub_order: Vec<&'static str> = vec!["en", "es", "ar", "fr", "de", "it", "ja", "pt", "pl", "nl", "nb", "fi", "tr", "sv", "el", "he", "ro", "id", "th", "ko", "da", "zh", "vi", "uk", "ru", "hu", "cs", "hr", "ms", "hi"];
-    subtitle_streams.sort_by(|a, b| {sub_order.iter().position(|l| *l == a.language().to_639_1().unwrap()).unwrap_or(sub_order.len()).cmp(&sub_order.iter().position(|l| *l == b.language().to_639_1().unwrap()).unwrap_or(audio_order.len()))});
+    let sub_order: Vec<&'static str> = vec!["eng", "spa", "ara", "fra", "deu", "ita", "jpn", "por", "pol", "nld", "nob", "fin", "tur", "swe", "ell", "heb", "ron", "ind", "tha", "kor", "dan", "chi", "vie", "ukr", "rus", "hun", "ces", "hrv", "msa", "hin"];
+    subtitle_streams.sort_by(|a, b| {sub_order.iter().position(|l| *l == a.language().to_639_3()).unwrap_or(sub_order.len()).cmp(&sub_order.iter().position(|l| *l == b.language().to_639_3()).unwrap_or(audio_order.len()))});
     // obnoxiously long sort, TODO: make readable
     let mut ainfo: Vec<Probe> = Vec::new();
     let mut sinfo: Vec<Probe> = Vec::new();
@@ -1085,7 +1085,7 @@ fn zone_overrides(
     serde_json::to_writer(writer, &scenes_o).unwrap();
 }
 
-fn validate_overrides(scenes_path: &PathBuf, args: &Args, cr: &String, matrix: &String, transfer: &String, primaries: &String,) {
+fn validate_overrides(scenes_path: &PathBuf, args: &Args) {
     if args.parameters.is_none() {
         return;
     }
@@ -1096,47 +1096,14 @@ fn validate_overrides(scenes_path: &PathBuf, args: &Args, cr: &String, matrix: &
             continue
         }
         let overrides = scene.zone_overrides.as_mut().unwrap();
-        let q_32 = scene.final_quantizer.unwrap();
-        let (q, speed, tiles) = (
-            q_32.to_string(),
-            args.speed.to_string(),
-            args.tiles.to_string(),
-        );
         if overrides.encoder == "rav1e" {
-            let params: Vec<String> = vec_into![
-                "--quantizer", q,
-                "-s", speed,
-                "--tiles", tiles,
-                "--keyint", "0",
-                "--no-scene-detection",
-                "--range", cr,
-                "--matrix", matrix,
-                "--transfers", transfer,
-                "--primaries", primaries
-            ];
-            let parameters = [params, args.parameters.as_ref().unwrap().split(" ").map(String::from).collect()].concat();
-            overrides.video_params = parameters;
+            if overrides.video_params.len() == 17 { // number of arguments by default
+                overrides.video_params = [overrides.video_params.clone(), args.parameters.as_ref().unwrap().split(" ").map(String::from).collect()].concat();
+            }
         } else {
-            let params: Vec<String> = vec_into![
-                "--crf", q,
-                "--preset", speed,
-                "--tune", "3",
-                "--sharpness", "2",
-                "--variance-boost-strength", "4",
-                "--variance-octile", "4",
-                "--frame-luma-bias", "100",
-                "--keyint", "0",
-                "--enable-dlf", "2",
-                "--enable-cdef", "0",
-                "--enable-restoration", "0",
-                "--enable-tf", "0",
-                "--color-range", cr,
-                "--matrix-coefficients", matrix,
-                "--transfer-characteristics", transfer,
-                "--color-primaries", primaries
-            ];
-            let parameters = [params, args.parameters.as_ref().unwrap().split(' ').map(String::from).collect()].concat();
-            overrides.video_params = parameters;
+            if overrides.video_params.len() == 32 { // number of arguments by default
+                overrides.video_params = [overrides.video_params.clone(), args.parameters.as_ref().unwrap().split(" ").map(String::from).collect()].concat();
+            }
         }
     }
     let writer = File::create(scenes_path).unwrap();
@@ -1440,7 +1407,7 @@ fn process_command(args: Args) {
             if scenes.try_exists().is_ok_and(|b| b == false) {
                 scene_detection(&scene_detect, &encode, &scenes, &temp, &args, &vinfo);
             }
-            if !args.single_pass && args.parameters.is_none() {
+            if !args.single_pass {
                 if scenes_over.try_exists().is_ok_and(|b| b == false) {
                     let scenes_info_read = File::open(&scenes).unwrap();
                     let mut scenes_info: ScenesInfo = serde_json::from_reader(&scenes_info_read).unwrap();
@@ -1485,8 +1452,8 @@ fn process_command(args: Args) {
             } else {
                 scenes_file = scenes.clone();
             }
-            if args.parameters.is_some() {
-                validate_overrides(&scenes_file, &args, &cr, &matrix, &transfer, &primaries);
+            if args.parameters.is_some() && !args.single_pass {
+                validate_overrides(&scenes_file, &args);
             }
             encode_file(&scene_detect, &script, &encode, &temp, &scenes_file, Some(args.speed), Some(args.quantizer), None, true, &args, &vinfo);
         }
