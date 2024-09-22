@@ -175,6 +175,9 @@ pub struct Args {
     /// Manually set offset for 2nd sources in milliseconds
     #[arg(long, default_value_t = 0)]
     pub sync: u32,
+    /// Skip audio re-encoding
+    #[arg(long, num_args = 0, default_value_t = false)]
+    pub original_audio: bool,
     /// Skip creating a torrent file
     #[arg(long, num_args = 0, default_value_t = false)]
     pub no_torrent: bool,

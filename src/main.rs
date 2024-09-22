@@ -264,6 +264,7 @@ fn ffprobe(file: &PathBuf) -> FileProbe {
     let mut ffprobe: Vec<u8> = Vec::new();
     let ffprobe_save = PathBuf::from(format!("{}.ffprobe", file.as_path().display()));
     if ffprobe_save.try_exists().is_ok_and(|b| b == true) {
+        println!("Reading cached ffprobe result at {}", ffprobe_save.display());
         File::open(ffprobe_save).unwrap().read_to_end(&mut ffprobe).unwrap();
     } else {
         ffprobe = Command::new("ffprobe")
@@ -526,6 +527,9 @@ fn get_info(file_path: &PathBuf, src2_paths: &Option<PathBuf>, args: &Args) -> (
     if args.audio == "1" || args.audio == "both" {
         audio_streams = get_medium_streams(&ffprobe_input, &file_path, "audio", None);
         for mut stream in &mut audio_streams {
+            if args.original_audio {
+                break;
+            }
             let audio = &stream.stream;
             let channels = audio.channels.unwrap();
             let bps: u32 = stream.bit_rate();
@@ -573,6 +577,9 @@ fn get_info(file_path: &PathBuf, src2_paths: &Option<PathBuf>, args: &Args) -> (
             if args.audio == "2" || args.audio == "both" {
                 let mut a_streams = get_medium_streams(&ffprobe_input, &dir_entry.path(), "audio", Some(offset));
                 for mut stream in &mut audio_streams {
+                    if args.original_audio {
+                        break;
+                    }
                     let audio = &stream.stream;
                     let channels = audio.channels.unwrap();
                     let bps: u32 = stream.bit_rate();
@@ -1521,16 +1528,16 @@ fn process_command(args: Args) {
             create_torrent(opus_options, encoder_options.clone().unwrap(), &torrent_path.clone().unwrap(), &torrent_files.clone().unwrap(), &args);
         }
     }
-    let opus_options: String = if src2_paths.is_some() {
-        check_audio_encoding(&args.src2_directory.clone().unwrap())
-    } else {
-        check_audio_encoding(&args.input_directory.clone())
-    };
-    if args.batch
-        && !args.no_torrent
-        && torrent_path.clone().is_some()
-        && torrent_path.clone().unwrap().try_exists().is_ok_and(|b| b == false)
+    if args.batch &&
+        !args.no_torrent &&
+        torrent_path.clone().is_some() &&
+        torrent_path.clone().unwrap().try_exists().is_ok_and(|b| b == false)
     {
+        let opus_options: String = if src2_paths.is_some() {
+            check_audio_encoding(&args.src2_directory.clone().unwrap())
+        } else {
+            check_audio_encoding(&args.input_directory.clone())
+        };
         create_torrent(opus_options, encoder_options.unwrap(), &torrent_path.unwrap(), &torrent_files.unwrap(), &args);
     }
 }
