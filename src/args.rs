@@ -1,3 +1,4 @@
+use clap::builder::ArgPredicate;
 use clap::Parser;
 use std::path::PathBuf;
 use std::thread::available_parallelism;
@@ -16,8 +17,14 @@ pub struct Args {
     #[arg(short, long, default_value_t = String::from("Group"))]
     pub group: String,
     /// Series title
-    #[arg(short, long)]
+    // setting `required = false` makes it so that the error
+    // isnt as verbose as it should be, but for some reason
+    // `required_unless_present = "inherit_name"` doesnt work at all
+    #[arg(short, long, required = false, default_value_if("inherit_name", ArgPredicate::IsPresent, Some("")))]
     pub name: String,
+    /// Use video file name as output name
+    #[arg(long, num_args = 0, default_value_t = false)]
+    pub inherit_name: bool,
     /// Filename suffix
     #[arg(long, default_value_t = String::from("1080p.AV1"))]
     pub suffix: String,

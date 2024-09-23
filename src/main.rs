@@ -68,7 +68,7 @@ struct Stream {
     #[serde(default)]
     codec_type: String,
     avg_frame_rate: Option<String>,
-    start_pts: u16,
+    start_pts: u32,
     channels: Option<u8>,
     width: Option<u16>,
     height: Option<u16>,
@@ -1318,7 +1318,9 @@ fn process_command(args: Args) {
         if !args.not_show {
             println!("Episode {episode_number}");
         }
-        let filename_output = if !args.not_show {
+        let filename_output = if args.inherit_name { 
+            base.to_string_lossy().to_string()
+        } else if !args.not_show {
             format!("[{}] {} - {episode_number} [{}]", args.group, args.name, args.suffix)
         } else {
             format!("[{}] {} [{}]", args.group, args.name, args.suffix)
