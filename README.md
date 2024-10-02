@@ -17,8 +17,9 @@ Bolded dependencies are **required**.
 * **[svt-av1-psy](https://github.com/gianni-rosato/svt-av1-psy)/[rav1e](https://github.com/xiph/rav1e)** (at least one is required)
 * **[MKVToolNix](https://mkvtoolnix.download)**
 * [Grav1synth](https://github.com/rust-av/grav1synth) (required if `--no-grain` is unset)
-* [opus-tools](https://github.com/xiph/opus-tools) (required for encoding opus)
+* [opus-tools](https://github.com/xiph/opus-tools) (required if `--original-audio` is unset)
 * **[BestSource](https://github.com/vapoursynth/bestsource)/[LSMASHSource](https://github.com/HomeOfAviSynthPlusEvolution/L-SMASH-Works)/[dgdecnv](https://www.rationalqm.us/dgdecnv/dgdecnv.html)** (at least one required)
+* [vszip](https://github.com/dnjulek/vapoursynth-zip) (required if `--ssimu2-algo` isn't set to ssimulacra2_rs)
 * [vs-mlrt](https://github.com/AmusementClub/vs-mlrt) (required for scaling)
 * [vsjet](https://github.com/Jaded-Encoding-Thaumaturgy/vs-jet) (required for scaling)
 * [vodesfunc](https://github.com/Vodes/vodesfunc) (required for scaling)

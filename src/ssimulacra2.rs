@@ -1,4 +1,6 @@
 use av_metrics_decoders::{Decoder, VapoursynthDecoder};
+use vapoursynth::core::CoreRef;
+use vapoursynth::prelude::*;
 use crossterm::tty::IsTty;
 use indicatif::{HumanDuration, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use ssimulacra2::{
@@ -7,18 +9,19 @@ use ssimulacra2::{
 };
 use std::cmp::min;
 use std::collections::BTreeMap;
-use std::io::stderr;
-use std::path::PathBuf;
+use std::io::{stderr, prelude::*};
+use std::path::{absolute as abs, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::available_parallelism;
 use std::time::Duration;
+use std::process::exit;
 
 trait FromSize {
     fn from_size(width: usize, height: usize, matrix: Option<Matrices>) -> Self;
 }
 
 impl FromSize for Matrices {
-    fn from_size(width: usize, height: usize, matrix: Option<Matrices>) -> Matrices {
+    fn from_size(width: usize, height: usize, _matrix: Option<Matrices>) -> Matrices {
         if width >= 1280 || height > 576 {
             Matrices::BT709
         } else if height == 576 {
@@ -243,6 +246,154 @@ fn calc_score<S: Pixel, D: Pixel, E: Decoder, F: Decoder>(
         frame_idx,
         compute_frame_ssimulacra2(src_yuv, dst_yuv).expect("Failed to calculate ssimulacra2"),
     ))
+}
+
+fn lwlibavsource<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>, format: &str) -> Node<'a> {
+    let lsmas = core.get_plugin_by_namespace("lsmas").unwrap().expect("Failed to find lsmas namespace! Is the plugin installed?");
+    let mut args = OwnedMap::new(*api);
+    args.set_data("source", file.to_str().unwrap().as_bytes()).unwrap();
+    args.set_data("cachedir", file.parent().unwrap().to_str().unwrap().as_bytes()).unwrap();
+    args.set_data("format", format.as_bytes()).unwrap();
+    args.set_int("prefer_hw", 3).unwrap();
+    let func = lsmas.invoke("LWLibavSource", &args).unwrap();
+    if func.error().is_some() {
+        panic!("{}", func.error().unwrap());
+    }
+    func.get_node("clip").unwrap()
+}
+
+fn bestsource<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>) -> Node<'a> {
+    let bs = core.get_plugin_by_namespace("bs").unwrap().expect("Failed to find bs namespace! Is the plugin installed?");
+    let abspath = abs(file.parent().unwrap()).unwrap();
+    let mut root = abspath.components().next().unwrap().as_os_str().to_string_lossy().to_string();
+    if !root.ends_with('/') {
+        root.push('/');
+    }
+    let mut args = OwnedMap::new(*api);
+    args.set_data("source", abs(file).unwrap().to_str().unwrap().as_bytes()).unwrap();
+    args.set_data("cachepath", root.as_bytes()).unwrap();
+    let func = bs.invoke("VideoSource", &args).unwrap();
+    if func.error().is_some() {
+        panic!("{}", func.error().unwrap());
+    }
+    func.get_node("clip").unwrap()
+}
+
+fn dgdecodenv<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>) -> Node<'a> {
+    let dgdecodenv = core.get_plugin_by_namespace("dgdecodenv").unwrap().expect("Failed to find dgdecodenv namespace! Is the plugin installed?");
+    let mut args = OwnedMap::new(*api);
+    args.set_data("source", file.to_str().unwrap().as_bytes()).unwrap();
+    let func = dgdecodenv.invoke("DGSource", &args).unwrap();
+    if func.error().is_some() {
+        panic!("{}", func.error().unwrap());
+    }
+    func.get_node("clip").unwrap()
+}
+
+pub fn get_vs_ssimu2(src: &PathBuf, distorted: &PathBuf, cycle: u8, algo: &String) -> BTreeMap<usize, f64> {
+    let threads = available_parallelism().unwrap().get();
+    let api = API::get().unwrap();
+    let core = api.create_core(threads as i32);
+    let vszip = core.get_plugin_by_namespace("vszip").unwrap().expect("Failed to find vszip namespace! Is the plugin installed?");
+    let skip_content = if src.extension().is_some_and(|e| e.to_ascii_lowercase() == "vpy") {
+        Some(Environment::from_file(src, EvalFlags::Nothing).unwrap())
+    } else {
+        None
+    };
+    let reference = if skip_content.as_ref().is_some() {
+        skip_content.as_ref().unwrap().get_output(0).unwrap().0
+    } else {
+        if algo == "lsmash" {
+            lwlibavsource(&src, &api, &core, "YUV420P8")
+        } else if algo == "bestsource" {
+            bestsource(&src, &api, &core)
+        } else if algo == "dgdecnv" {
+            dgdecodenv(&src, &api, &core)
+        } else {
+            unreachable!()
+        }
+    };
+    let distort = if algo == "lsmash" {
+        lwlibavsource(&distorted, &api, &core, "YUV420P8")
+    } else if algo == "bestsource" {
+        bestsource(&distorted, &api, &core)
+    } else if algo == "dgdecnv" {
+        dgdecodenv(&distorted, &api, &core)
+    } else {
+        unreachable!()
+    };
+    let frames = reference.info().num_frames;
+    let mut args = OwnedMap::new(api);
+    args.set_node("reference", &reference).unwrap();
+    args.set_node("distorted", &distort).unwrap();
+    args.set_int("mode", 0).unwrap();
+    let scored = vszip.invoke("Metrics", &args).unwrap();
+    if scored.error().is_some() {
+        panic!("{}", scored.error().unwrap());
+    }
+    let scored_node = scored.get_node("clip").unwrap();
+    let progress = if stderr().is_tty() {
+        let pb = ProgressBar::new(frames as u64)
+            .with_style(pretty_progress_style())
+            .with_message(", avg: N/A");
+        pb.set_draw_target(ProgressDrawTarget::stderr());
+        pb.enable_steady_tick(Duration::from_millis(100));
+        pb.reset();
+        pb.reset_eta();
+        pb.reset_elapsed();
+        pb.set_position(0);
+        pb
+    } else {
+        ProgressBar::hidden()
+    };
+    let mut avg = 0f64;
+    let mut results = BTreeMap::new();
+    let mut jobs = 0u8;
+    for index in 0..frames {
+        loop {
+            if (jobs as usize) < threads {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        jobs += 1;
+        scored_node.get_frame_async(index, |frame, n, _| {
+            let frame = frame.expect("Failed to generate frame!");
+            let score = frame.props().get_float("_SSIMULACRA2").expect("Failed to get SSIMULACRA2 score!");
+            results.insert(n * cycle as usize, score);
+            avg = avg + (score - avg) / (min(results.len(), 10) as f64);
+            if progress.is_finished() {
+                eprintln!("Got frame but progress bar is finished! Frame: {n}");
+            } else {
+                progress.set_message(format!(", avg: {:.1$}", avg, 2));
+                progress.inc(1);
+            }
+            jobs -= 1;
+        });
+    }
+    loop {
+        if results.len() >= frames {
+            progress.finish();
+            break;
+        }
+        if jobs == 0 {
+            eprintln!("Number of SSIMULACRA2 jobs has reached 0, but results only has {} entries instead of {frames}!", results.len());
+            println!("PAUSED: Would you like to continue?");
+            print!("(yes/no): ");
+            std::io::stdout().flush().expect("Failed to flush!");
+            let mut input: String = String::new();
+            std::io::stdin().read_line(&mut input).expect("Failed to read input!");
+            if input != "yes\n" {
+                eprintln!("\nAborted. Exiting script.");
+                exit(0);
+            }
+            println!("Continuing.");
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    progress.finish();
+    results
 }
 
 pub fn get_ssimu2(src: &PathBuf, distorted: &PathBuf, cycle: u8, cr: String, matrix: String, transfer: String, primaries: String) -> BTreeMap<usize, f64> {

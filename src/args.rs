@@ -185,6 +185,9 @@ pub struct Args {
     /// Skip audio re-encoding
     #[arg(long, num_args = 0, default_value_t = false)]
     pub original_audio: bool,
+    /// Choose which library is used to calculate SSIMULACRA2 scores
+    #[arg(long, value_parser(["vszip", "ssimulacra2_rs"]), default_value_t = String::from("vszip"))]
+    pub ssimu2_algo: String,
     /// Skip creating a torrent file
     #[arg(long, num_args = 0, default_value_t = false)]
     pub no_torrent: bool,

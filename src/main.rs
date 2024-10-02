@@ -19,7 +19,7 @@ mod args;
 mod torrent;
 use self::args::Args;
 use self::torrent::create_torrent;
-use self::ssimulacra2::get_ssimu2;
+use self::ssimulacra2::*;
 
 // mixing &str and String is painful
 macro_rules! vec_into {
@@ -891,6 +891,9 @@ fn scene_detection(vpy_path: &PathBuf, encode: &PathBuf, scenes: &PathBuf, temp:
         "-e", "svt-av1", "-v", format!("--crf {quantizer} --preset {speed} --tune 3 --sharpness 2 --variance-boost-strength 4 --variance-octile 4 --frame-luma-bias 100 --keyint 0 --enable-dlf 2 --enable-cdef 0 --enable-restoration 0 --enable-tf 0 --color-range {cr} --matrix-coefficients {matrix} --transfer-characteristics {transfer} --color-primaries {primaries}").as_str(),
         "-m", args.source_filter.as_str(), "-c", "mkvmerge", "--pix-format", args.pixel_format.as_str()
     ]).spawn().unwrap().wait().unwrap();
+    if encode.try_exists().is_ok_and(|b| b==false) {
+        panic!("Failed to execute scene detection!")
+    }
 }
 
 fn quantizer_range(range: Option<String>, encoder: String) -> [f32; 2] {
@@ -945,10 +948,14 @@ fn encode_file(scene_detect: &PathBuf, script: &PathBuf, encode: &PathBuf, temp:
     }
 }
 
-fn get_ssimulacra2(src: &PathBuf, distorted: &PathBuf, scenes_info: &mut ScenesInfo, quantizer: f32, cycle: u8, cr: &String, matrix: &String, transfer: &String, primaries: &String) {
+fn get_ssimulacra2(src: &PathBuf, distorted: &PathBuf, scenes_info: &mut ScenesInfo, quantizer: f32, args: &Args, cr: &String, matrix: &String, transfer: &String, primaries: &String) {
     let cache = temp_path(distorted, ".ssimu2");
     let results = if cache.try_exists().is_ok_and(|b| b == false) {
-        let hi = get_ssimu2(src, distorted, cycle, cr.clone(), matrix.clone(), transfer.clone(), primaries.clone());
+        let hi = if args.ssimu2_algo == "vszip" {
+            get_vs_ssimu2(src, distorted, args.cycle, &args.source_filter)
+        } else {
+            get_ssimu2(src, distorted, args.cycle, cr.clone(), matrix.clone(), transfer.clone(), primaries.clone())
+        };
         let file = File::create(cache).unwrap();
         serde_json::to_writer(file, &hi).expect("Failed to cache SSIMULCRA2 scores!");
         hi
@@ -1126,6 +1133,9 @@ fn add_grain_table(encode: &PathBuf, grained: &PathBuf, photon_noise: u16) {
             "--iso", photon_noise.to_string().as_str(),
         ])
         .spawn().unwrap().wait().unwrap();
+    if grained.try_exists().is_ok_and(|b| b==false) {
+        panic!("Failed to create grain table!");
+    }
 }
 
 fn grain_chunks(
@@ -1146,6 +1156,9 @@ fn grain_chunks(
                 "diff", grainy.to_str().unwrap(), cleaned.to_str().unwrap(),
                 "-o", gtable.to_str().unwrap(),
             ]).spawn().unwrap().wait().unwrap();
+        if gtable.try_exists().is_ok_and(|b| b==false) {
+            panic!("Failed to create grain table!");
+        }
     }
     if grained.try_exists().is_ok_and(|b| b == false) {
         Command::new(get_binary("grav1synth"))
@@ -1154,6 +1167,9 @@ fn grain_chunks(
                 "-o", grained.to_str().unwrap(),
                 "-g", gtable.to_str().unwrap(),
             ]).spawn().unwrap().wait().unwrap();
+        if grained.try_exists().is_ok_and(|b| b==false) {
+            panic!("Failed to create grained video!");
+        }
     }
 }
 
@@ -1186,6 +1202,9 @@ fn get_diff_grain(
         .args(args)
         .current_dir(&grained_dir)
         .spawn().unwrap().wait().unwrap();
+    if grained.try_exists().is_ok_and(|b| b==false) {
+        panic!("mkvmerge failed to create grained video!");
+    }
 }
 
 fn get_tags(tags_file: &PathBuf, encoder_options: Option<String>, args: &Args) {
@@ -1286,6 +1305,9 @@ fn mux_file(
     Command::new(get_binary("mkvmerge"))
         .args(&arguments)
         .spawn().unwrap().wait().unwrap();
+    if output_path.try_exists().is_ok_and(|b| b==false) {
+        panic!("mkvmerge failed to create output video!");
+    }
 }
 
 fn process_command(args: Args) {
@@ -1340,6 +1362,11 @@ fn process_command(args: Args) {
             && torrent_path.clone().unwrap().try_exists().is_ok_and(|b| b == true)
             || args.no_torrent && output_path.clone().try_exists().is_ok_and(|b| b == true)
         {
+            if !args.no_torrent {
+                println!("Torrent file exists, skipping!");
+            } else {
+                println!("Output file exists, skipping!");
+            }
             continue;
         }
         if (args.audio == "2" || args.audio == "both") || (args.subs == "2" || args.subs == "both")
@@ -1429,7 +1456,7 @@ fn process_command(args: Args) {
                     if lowest.try_exists().is_ok_and(|b| b == false) {
                         encode_file(&skip_frames, &skip_frames, &lowest, &lowest_temp, &scenes_skip, Some(multi_speed), Some(lowest_quantizer), None, false, &args, &vinfo);
                     }
-                    get_ssimulacra2(&skip_frames, &lowest, &mut scenes_info, lowest_quantizer, args.cycle, &cr, &matrix, &transfer, &primaries);
+                    get_ssimulacra2(&skip_frames, &lowest, &mut scenes_info, lowest_quantizer, &args, &cr, &matrix, &transfer, &primaries);
 
                     let low_quantizer = calculate_quantizer(&args, 1);
                     let low = temp_path(&file_path, "_low.mkv");
@@ -1437,7 +1464,7 @@ fn process_command(args: Args) {
                     if low.try_exists().is_ok_and(|b| b == false) {
                         encode_file(&skip_frames, &skip_frames, &low, &low_temp, &scenes_skip, Some(multi_speed), Some(low_quantizer), None, false, &args, &vinfo);
                     }
-                    get_ssimulacra2(&skip_frames, &low, &mut scenes_info, low_quantizer, args.cycle, &cr, &matrix, &transfer, &primaries);
+                    get_ssimulacra2(&skip_frames, &low, &mut scenes_info, low_quantizer, &args, &cr, &matrix, &transfer, &primaries);
 
                     let high_quantizer = calculate_quantizer(&args, -1);
                     let high = temp_path(&file_path, "_high.mkv");
@@ -1445,7 +1472,7 @@ fn process_command(args: Args) {
                     if high.try_exists().is_ok_and(|b| b == false) {
                         encode_file(&skip_frames, &skip_frames, &high, &high_temp, &scenes_skip, Some(multi_speed), Some(high_quantizer), None, false, &args, &vinfo);
                     }
-                    get_ssimulacra2(&skip_frames, &high, &mut scenes_info, high_quantizer, args.cycle, &cr, &matrix, &transfer, &primaries);
+                    get_ssimulacra2(&skip_frames, &high, &mut scenes_info, high_quantizer, &args, &cr, &matrix, &transfer, &primaries);
 
                     let highest_quantizer = calculate_quantizer(&args, -2);
                     let highest = temp_path(&file_path, "_highest.mkv");
@@ -1453,7 +1480,7 @@ fn process_command(args: Args) {
                     if highest.try_exists().is_ok_and(|b| b == false) {
                         encode_file(&skip_frames, &skip_frames, &highest, &highest_temp, &scenes_skip, Some(multi_speed), Some(highest_quantizer), None, false, &args, &vinfo);
                     }
-                    get_ssimulacra2(&skip_frames, &highest, &mut scenes_info, highest_quantizer, args.cycle, &cr, &matrix, &transfer, &primaries);
+                    get_ssimulacra2(&skip_frames, &highest, &mut scenes_info, highest_quantizer, &args, &cr, &matrix, &transfer, &primaries);
 
                     zone_overrides(&mut scenes_info, &scenes, &scenes_over, &args, &cr, &matrix, &transfer, &primaries);
                 }
