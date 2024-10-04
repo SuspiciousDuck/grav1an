@@ -69,9 +69,6 @@ pub struct Args {
     /// Border padding
     #[arg(long, requires = "rescale", default_value_t = 0)]
     pub borders: u16,
-    /// Upscale precision
-    #[arg(long, requires = "rescale", default_value_t = true)]
-    pub fp16: bool,
     /// Tiles for upscale to reduce vram usage
     #[arg(long, requires = "rescale", default_value_t = 4)]
     pub dstiles: u8,
@@ -136,7 +133,7 @@ pub struct Args {
     #[arg(long, num_args = 0, default_value_t = false)]
     pub single_pass: bool,
     /// Adjust quality per scene with multipass encoding to target mean SSIMU2 score
-    #[arg(long, default_value_t = 80.0)]
+    #[arg(long, default_value_t = 70.0)]
     pub target_quality: f32,
     #[arg(short, long, default_value_t = 10)]
     pub cycle: u8,
@@ -180,8 +177,8 @@ pub struct Args {
     #[arg(long, value_enum, default_value = None)]
     pub src2_directory: Option<PathBuf>,
     /// Manually set offset for 2nd sources in milliseconds
-    #[arg(long, default_value_t = 0)]
-    pub sync: u32,
+    #[arg(long, allow_hyphen_values = true, default_value_t = 0)]
+    pub sync: i32,
     /// Skip audio re-encoding
     #[arg(long, num_args = 0, default_value_t = false)]
     pub original_audio: bool,

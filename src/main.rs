@@ -47,6 +47,7 @@ struct QuantizerScores {
     median: f64,
     std_dev: f64,
     percentile_5th: f64,
+    percentile_16th: f64,
     percentile_95th: f64,
 }
 
@@ -113,7 +114,7 @@ struct FileProbe {
 struct Probe {
     stream: Stream,
     file: PathBuf,
-    offset: u32,
+    offset: i32,
     index: Option<u8>,
 }
 impl Probe {
@@ -370,7 +371,7 @@ fn enc_opus(source: &PathBuf, stream: &mut Probe, bitrate: &str) {
     audio_path.set_extension(format!("{index}.{lang}.opus"));
     stream.file = audio_path.clone();
     if s.start_pts != 0 {
-        stream.offset += s.start_pts.clone() as u32;
+        stream.offset += s.start_pts.clone() as i32;
     }
     if audio_path.try_exists().is_ok_and(|r| r == false) {
         #[rustfmt::skip]
@@ -401,7 +402,7 @@ fn enc_opus(source: &PathBuf, stream: &mut Probe, bitrate: &str) {
 }
 
 #[rustfmt::skip]
-fn get_medium_streams(ffprobe_input: &FileProbe, file_path: &PathBuf, medium: &str, offset: Option<u32>) -> Vec<Probe> {
+fn get_medium_streams(ffprobe_input: &FileProbe, file_path: &PathBuf, medium: &str, offset: Option<i32>) -> Vec<Probe> {
     let result = ffprobe_input.streams.iter().filter(|s| s.codec_type == medium).map(|s| Probe {stream: s.clone(),file: file_path.clone(),offset: offset.unwrap_or(0),index: None});
     return Vec::from_iter(result);
 }
@@ -480,7 +481,7 @@ fn filter_redundant_tracks(streams: &mut Vec<Probe>) -> Vec<Probe> {
 }
 
 #[rustfmt::skip]
-fn get_offset(file_path: &PathBuf, src2_path: &PathBuf) -> u32 {
+fn get_offset(file_path: &PathBuf, src2_path: &PathBuf) -> i32 {
     println!("Determining offsets for {}", src2_path.display());
     let ref_clip = file_path.parent().unwrap().join(format!("{}_clip.mkv",file_path.file_stem().unwrap().to_str().unwrap()));
     let src_clip = src2_path.parent().unwrap().join(format!("{}_clip.mkv",src2_path.file_stem().unwrap().to_str().unwrap()));
@@ -510,17 +511,19 @@ fn get_offset(file_path: &PathBuf, src2_path: &PathBuf) -> u32 {
             .output().unwrap();
         let re = Regex::new(r"(?i)matching of video 0 at ([0-9]+\.[0-9]+) and 1 at ([0-9]+\.[0-9]+)").unwrap();
         let result = re.captures(core::str::from_utf8(&position_info.stderr).unwrap())
-            .expect("Failed to load regex")
-            .expect("Failed to determine offsets");
+            .expect("Failed to load regex!")
+            .expect("Failed to determine offsets!");
         offset = result.get(1).unwrap().as_str().parse::<f32>().unwrap() - result.get(2).unwrap().as_str().parse::<f32>().unwrap();
         File::create(offset_save).unwrap().write_fmt(format_args!("{offset}")).unwrap();
     }
-    return (offset * 1000.0) as u32
+    return (offset * 1000.0) as i32
 }
 
 #[rustfmt::skip]
 fn get_info(file_path: &PathBuf, src2_paths: &Option<PathBuf>, args: &Args) -> (Vec<Probe>,Vec<Probe>,Vec<Probe>) {
     println!("Collecting video information for {}", file_path.display());
+    let file_base = file_path.file_stem().unwrap();
+    let episode = extract_episode_number(&file_base, args.episode_pattern.clone(), Some(args.season.clone())).unwrap_or("".into());
     let ffprobe_input = ffprobe(file_path);
     let mut video_streams = get_medium_streams(&ffprobe_input, &file_path, "video", None);
     let mut audio_streams = Vec::new();
@@ -555,7 +558,13 @@ fn get_info(file_path: &PathBuf, src2_paths: &Option<PathBuf>, args: &Args) -> (
     if args.audio == "2" || args.audio == "both" || args.subs == "2" || args.subs == "both" {
         for path in src2_paths.clone().unwrap().read_dir().unwrap() {
             let dir_entry = path.unwrap();
+            let path = dir_entry.path();
             if is_temporary_file(&dir_entry.file_name()) {
+                continue;
+            }
+            let base = path.file_stem().unwrap();
+            let episode_src2 = extract_episode_number(&base, args.episode_pattern.clone(), Some(args.season.clone())).unwrap_or("".into());
+            if (episode != "" && episode != episode_src2) || file_base != base {
                 continue;
             }
             let ffprobe_input = ffprobe(&dir_entry.path());
@@ -764,7 +773,7 @@ fn get_rescale_string(args: &Args) -> String {
         } else {
             rescale_string = format!("{rescale_string}\"height={}, width={}", args.height.unwrap(), args.width.unwrap());
         }
-        rescale_string = format!("{rescale_string}, kernel={}, border_handling={}\", upscale with vs-scale: \"Waifu2x\", downscale with vs-kernels: \"Hermite(linear=True)\"", args.algo.as_ref().unwrap(), args.borders);
+        rescale_string = format!("{rescale_string}, kernel={}, border_handling={}\", upscaling with vs-scale: \"ArtCNN C16F64\", downscale with vs-kernels: \"Hermite(linear=True)\"", args.algo.as_ref().unwrap(), args.borders);
     }
     return rescale_string;
 }
@@ -815,7 +824,7 @@ fn create_vpy_script(vpy_path: &PathBuf, file_path: &PathBuf, args: &Args, vinfo
     let mut imports = format!("import vapoursynth as vs\nfrom vstools import initialize_clip, depth\nfrom vsdeband import F3kdb, masked_deband\n");
     let mut contents = format!("core = vs.core\ncore.max_cache_size = {}\nsrc = core.{source_string}\n# clip1 = src[1004:10893]\n# clip2 = src[11194:44161]\n# src = clip1+clip2\n# src = core.vivtc.VFM(src, 1, mode=3) # 60i to 30p\n# src = core.vivtc.VDecimate(src, 5) # 30p to 24p\nsrc = initialize_clip(src)\n", args.mem as u32 * 1024);
     if args.rescale {
-        imports = format!("{imports}import lvsfunc as lvs\nimport vskernels as vsk\nfrom vodesfunc import RescaleBuilder\nfrom vsscale import Waifu2x\n");
+        imports = format!("{imports}import lvsfunc as lvs\nimport vskernels as vsk\nfrom vodesfunc import RescaleBuilder\nfrom vsscale import ArtCNN\n");
         let (descale_height, descale_width) = get_descale_dimensions(&args.height, &args.width);
         let mut rescale_string = if args._match {
             let target_string = format!("target_height={descale_height}, target_width={descale_width},");
@@ -824,11 +833,10 @@ fn create_vpy_script(vpy_path: &PathBuf, file_path: &PathBuf, args: &Args, vinfo
         } else {
             format!("height={descale_height}, width={descale_width}")
         };
-        rescale_string = format!("{rescale_string}, kernel=vsk.{}, border_handling={}, upscaler=Waifu2x(cuda=\"trt\", fp16={}, tiles={}), downscaler=vsk.Hermite(linear=True)", args.algo.as_ref().unwrap(), args.borders, args.fp16, args.dstiles);
         if args.shift.is_some() {
             rescale_string = format!("{rescale_string}, shift={}", args.shift.as_ref().unwrap());
         }
-        contents = format!("{contents}builder, src = (\nRescaleBuilder(src)\n.descale(vsk.{}(border_handling={}), {rescale_string})\n.double(Waifu2x(cuda=\"trt\", fp16={}, tiles={}))\n.errormask()\n.linemask()\n.downscale(vsk.Hermite(linear=True))\n.final()\n)\n", args.algo.as_ref().unwrap(), args.borders, args.fp16, args.dstiles);
+        contents = format!("{contents}builder, src = (\nRescaleBuilder(src)\n.descale(vsk.{}(border_handling={}), {rescale_string})\n.double(ArtCNN(tiles={}))\n.errormask()\n.linemask()\n.downscale(vsk.Hermite(linear=True))\n.final()\n)\n", args.algo.as_ref().unwrap(), args.borders, args.dstiles);
     }
     if !args.no_denoise {
         imports = format!("{imports}from vsdenoise import nl_means, MVTools, MVToolsPresets\n");
@@ -891,9 +899,6 @@ fn scene_detection(vpy_path: &PathBuf, encode: &PathBuf, scenes: &PathBuf, temp:
         "-e", "svt-av1", "-v", format!("--crf {quantizer} --preset {speed} --tune 3 --sharpness 2 --variance-boost-strength 4 --variance-octile 4 --frame-luma-bias 100 --keyint 0 --enable-dlf 2 --enable-cdef 0 --enable-restoration 0 --enable-tf 0 --color-range {cr} --matrix-coefficients {matrix} --transfer-characteristics {transfer} --color-primaries {primaries}").as_str(),
         "-m", args.source_filter.as_str(), "-c", "mkvmerge", "--pix-format", args.pixel_format.as_str()
     ]).spawn().unwrap().wait().unwrap();
-    if encode.try_exists().is_ok_and(|b| b==false) {
-        panic!("Failed to execute scene detection!")
-    }
 }
 
 fn quantizer_range(range: Option<String>, encoder: String) -> [f32; 2] {
@@ -951,6 +956,7 @@ fn encode_file(scene_detect: &PathBuf, script: &PathBuf, encode: &PathBuf, temp:
 fn get_ssimulacra2(src: &PathBuf, distorted: &PathBuf, scenes_info: &mut ScenesInfo, quantizer: f32, args: &Args, cr: &String, matrix: &String, transfer: &String, primaries: &String) {
     let cache = temp_path(distorted, ".ssimu2");
     let results = if cache.try_exists().is_ok_and(|b| b == false) {
+        println!("Calculating SSIMULACRA 2 Scores for Q{quantizer}");
         let hi = if args.ssimu2_algo == "vszip" {
             get_vs_ssimu2(src, distorted, args.cycle, &args.source_filter)
         } else {
@@ -975,8 +981,8 @@ fn get_ssimulacra2(src: &PathBuf, distorted: &PathBuf, scenes_info: &mut ScenesI
             let _ = scores.insert(HashMap::new());
         }
         let mut data = statrs::statistics::Data::new(scene_scores.values().copied().collect::<Vec<f64>>());
-        let (mean, median, std_dev, p5, p95) = (data.mean().unwrap(), data.median(), data.std_dev().unwrap(), data.percentile(5), data.percentile(95));
-        let score_data = QuantizerScores { mean: (mean), median: (median), std_dev: (std_dev), percentile_5th: p5, percentile_95th: p95 };
+        let (mean, median, std_dev, p5, p16, p95) = (data.mean().unwrap(), data.median(), data.std_dev().unwrap(), data.percentile(5), data.percentile(16), data.percentile(95));
+        let score_data = QuantizerScores { mean: (mean), median: (median), std_dev: (std_dev), percentile_5th: p5, percentile_16th: p16, percentile_95th: p95 };
         let mut new = scores.clone().unwrap();
         new.insert(quantizer as usize, score_data);
         let _ = scores.insert(new);
@@ -994,20 +1000,16 @@ fn zone_overrides(
     primaries: &String,
 ) {
     let mut quantizers: Vec<f64> = Vec::new();
-    let mut mean_values: Vec<f64> = Vec::new();
+    let mut minus_sigma_values: Vec<f64> = Vec::new();
     for scene in &mut scenes_info.scenes {
         for (quantizer, data) in scene.quantizer_scores.as_ref().unwrap() {
             quantizers.push(quantizer.clone() as f64);
-            if args.encoder == "rav1e" {
-                mean_values.push(data.mean + 2.);
-            } else {
-                mean_values.push(data.mean + 1.);
-            }
+            minus_sigma_values.push(data.percentile_16th);
         }
-        let mean_corr = polyfit(&mean_values, &quantizers, 3).unwrap();
+        let minus_sigma_corr = polyfit(&minus_sigma_values, &quantizers, 3).unwrap();
         let q_range = quantizer_range(args.quantizer_range.clone(), args.encoder.clone());
-        let q = if !mean_corr.iter().all(|f| *f == 0.) {
-            let polynomial = polynomial::Polynomial::new(mean_corr);
+        let q = if !minus_sigma_corr.iter().all(|f| *f == 0.) {
+            let polynomial = polynomial::Polynomial::new(minus_sigma_corr);
             (polynomial.eval(args.target_quality as f64) as f32).clamp(q_range[0], q_range[1])
         } else {
             q_range[1]
@@ -1018,7 +1020,7 @@ fn zone_overrides(
             scene.final_quantizer = Some((q * 4.).round() / 4.);
         }
         quantizers.clear();
-        mean_values.clear();
+        minus_sigma_values.clear();
     }
     let scenes_o_read = File::open(scenes_path).unwrap();
     let mut scenes_o: ScenesInfo = serde_json::from_reader(scenes_o_read).unwrap();
@@ -1195,7 +1197,7 @@ fn get_diff_grain(
     }
     let input_files = Vec::from_iter(grained_dir.read_dir().unwrap().map(|f| abs(f.unwrap().path()).unwrap().to_string_lossy().to_string()));
     let mut vec_input: Vec<&str> = input_files.iter().map(|f| &**f).collect();
-    let mut args = vec!["mkvmerge", "-o", grained.to_str().unwrap(), "["];
+    let mut args = vec!["mkvmerge", "-q", "-o", grained.to_str().unwrap(), "["];
     args.append(&mut vec_input);
     args.append(&mut vec!["]"]);
     Command::new(get_binary("mkvmerge"))
