@@ -248,7 +248,7 @@ fn calc_score<S: Pixel, D: Pixel, E: Decoder, F: Decoder>(
     ))
 }
 
-fn lwlibavsource<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>, format: &str) -> Node<'a> {
+pub fn lwlibavsource<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>, format: &str) -> Node<'a> {
     let lsmas = core.get_plugin_by_namespace("lsmas").unwrap().expect("Failed to find lsmas namespace! Is the plugin installed?");
     let mut args = OwnedMap::new(*api);
     args.set_data("source", file.to_str().unwrap().as_bytes()).unwrap();
@@ -262,7 +262,7 @@ fn lwlibavsource<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>, format: &str
     func.get_node("clip").unwrap()
 }
 
-fn bestsource<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>) -> Node<'a> {
+pub fn bestsource<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>) -> Node<'a> {
     let bs = core.get_plugin_by_namespace("bs").unwrap().expect("Failed to find bs namespace! Is the plugin installed?");
     let abspath = abs(file.parent().unwrap()).unwrap();
     let mut root = abspath.components().next().unwrap().as_os_str().to_string_lossy().to_string();
@@ -279,7 +279,7 @@ fn bestsource<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>) -> Node<'a> {
     func.get_node("clip").unwrap()
 }
 
-fn dgdecodenv<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>) -> Node<'a> {
+pub fn dgdecodenv<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>) -> Node<'a> {
     let dgdecodenv = core.get_plugin_by_namespace("dgdecodenv").unwrap().expect("Failed to find dgdecodenv namespace! Is the plugin installed?");
     let mut args = OwnedMap::new(*api);
     args.set_data("source", file.to_str().unwrap().as_bytes()).unwrap();

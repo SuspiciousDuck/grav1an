@@ -6,6 +6,7 @@ use isolang::Language;
 use itertools::Itertools;
 use phf::phf_map;
 use polyfit_rs::polyfit_rs::polyfit;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use statrs::statistics::{Distribution, Median, OrderStatistics};
@@ -17,13 +18,21 @@ use which::which;
 mod ssimulacra2;
 mod args;
 mod torrent;
+mod tvdb4;
 use self::args::Args;
-use self::torrent::create_torrent;
+use self::torrent::*;
+use self::tvdb4::*;
 use self::ssimulacra2::*;
 
 // mixing &str and String is painful
 macro_rules! vec_into {
     ($($x:expr),*) => (vec![$($x.into()),*]);
+}
+
+#[derive(Clone, Debug, Default)]
+struct Screenshots {
+    source: Vec<String>,
+    encode: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -111,11 +120,21 @@ struct FileProbe {
 }
 
 #[derive(Clone, Debug)]
+struct Metadata {
+    url: Option<String>,
+    title: Option<String>,
+    banner: Option<String>,
+    id: Option<String>,
+    synopsis: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 struct Probe {
     stream: Stream,
     file: PathBuf,
     offset: i32,
     index: Option<u8>,
+    meta: Option<Metadata>,
 }
 impl Probe {
     fn language(&self) -> Language {
@@ -157,8 +176,7 @@ impl Probe {
         let stream = &self.stream;
         let dar = stream.display_aspect_ratio.clone().unwrap_or(String::new());
         // very convoluted
-        #[rustfmt::skip]
-        let (width, height) = if dar != String::new() {
+                let (width, height) = if dar != String::new() {
             let (a, b) = dar.split(":").collect_tuple().unwrap();
             (a.to_string(), b.to_string())
         } else {
@@ -169,7 +187,6 @@ impl Probe {
     fn fps(&self) -> f64 {
         let stream = &self.stream;
         // pray that this always works
-        #[rustfmt::skip]
         let (numerator, denominator) = stream.avg_frame_rate.as_ref().unwrap().split("/").collect_tuple().unwrap();
         numerator.parse::<f64>().unwrap() / denominator.parse::<f64>().unwrap()
     }
@@ -188,8 +205,7 @@ impl Probe {
                 "jpeg" => "full",
                 "full" => "full",
             };
-            #[rustfmt::skip]
-            return (rav1e_range.get(range.as_str()).unwrap().to_string(),matrix,transfer,primaries);
+                        return (rav1e_range.get(range.as_str()).unwrap().to_string(),matrix,transfer,primaries);
         } else {
             let svt_range = phf_map! {
                 "tv" => "0",
@@ -245,8 +261,7 @@ impl Probe {
                 "smpte432" => "12",
                 "ebu3213" => "22",
             };
-            #[rustfmt::skip]
-            return (svt_range.get(range.as_str()).unwrap().to_string(),svt_matrix.get(matrix.as_str()).unwrap().to_string(),svt_transfer.get(transfer.as_str()).unwrap().to_string(),svt_primaries.get(primaries.as_str()).unwrap().to_string());
+                        return (svt_range.get(range.as_str()).unwrap().to_string(),svt_matrix.get(matrix.as_str()).unwrap().to_string(),svt_transfer.get(transfer.as_str()).unwrap().to_string(),svt_primaries.get(primaries.as_str()).unwrap().to_string());
         }
     }
 }
@@ -260,7 +275,6 @@ fn main() {
     process_command(args);
 }
 
-#[rustfmt::skip]
 fn ffprobe(file: &PathBuf) -> FileProbe {
     let mut ffprobe: Vec<u8> = Vec::new();
     let ffprobe_save = PathBuf::from(format!("{}.ffprobe", file.as_path().display()));
@@ -304,7 +318,7 @@ fn check_audio_encoding(input_directory: &PathBuf) -> String {
             continue;
         }
         let ffprobe_input = ffprobe(&dir_entry.path());
-        let streams = get_medium_streams(&ffprobe_input, &dir_entry.path(), "audio", None);
+        let streams = get_medium_streams(&ffprobe_input, &dir_entry.path(), "audio", None, None);
         let stream = &streams[0].stream;
         if stream.tags.encoder_options.is_none() {
             continue;
@@ -315,7 +329,6 @@ fn check_audio_encoding(input_directory: &PathBuf) -> String {
     return opus_string;
 }
 
-#[rustfmt::skip]
 fn is_video(file: &PathBuf) -> bool {
     if !file.is_file() {
         return false;
@@ -325,14 +338,12 @@ fn is_video(file: &PathBuf) -> bool {
     return video_extensions.iter().any(|extension| tmp_str == *extension);
 }
 
-#[rustfmt::skip]
 fn is_temporary_file(file: &OsString) -> bool {
     let tmp_str = file.to_str().unwrap();
     let temp_extensions: Vec<&'static str> = vec!["_enc.mkv","_grained.mkv","_lowest.mkv","_low.mkv","_high.mkv","_highest.mkv","_grainy.mkv","_cleaned.mkv","_clip.mkv", ".ffprobe", ".offset", ".ssimu2"];
     return temp_extensions.iter().any(|extension| tmp_str.ends_with(extension));
 }
 
-#[rustfmt::skip]
 fn extract_episode_number(base: &OsStr, pattern: String, season: Option<String>) -> Result<String, String> {
     let temp_str = base.to_str().unwrap();
     if pattern == "1" || pattern == "2" {
@@ -374,8 +385,7 @@ fn enc_opus(source: &PathBuf, stream: &mut Probe, bitrate: &str) {
         stream.offset += s.start_pts.clone() as i32;
     }
     if audio_path.try_exists().is_ok_and(|r| r == false) {
-        #[rustfmt::skip]
-        let mut flac_pipe = Command::new(get_binary("ffmpeg"))
+                let mut flac_pipe = Command::new(get_binary("ffmpeg"))
             .args(["-i",source.to_str().unwrap(),"-map",format!("0:{index}").as_str(),"-v","16","-hide_banner","-f","flac","-"])
             .stdout(Stdio::piped())
             .spawn()
@@ -401,13 +411,18 @@ fn enc_opus(source: &PathBuf, stream: &mut Probe, bitrate: &str) {
     }
 }
 
-#[rustfmt::skip]
-fn get_medium_streams(ffprobe_input: &FileProbe, file_path: &PathBuf, medium: &str, offset: Option<i32>) -> Vec<Probe> {
-    let result = ffprobe_input.streams.iter().filter(|s| s.codec_type == medium).map(|s| Probe {stream: s.clone(),file: file_path.clone(),offset: offset.unwrap_or(0),index: None});
+fn get_medium_streams(ffprobe_input: &FileProbe, file_path: &PathBuf, medium: &str, offset: Option<i32>, meta: Option<&Metadata>) -> Vec<Probe> {
+    let result = ffprobe_input.streams.iter().filter(|s| s.codec_type == medium).map(|s|
+        Probe {
+            stream: s.clone(),
+            file: file_path.clone(),
+            offset: offset.unwrap_or(0),
+            index: None, 
+            meta: meta.cloned()
+        });
     return Vec::from_iter(result);
 }
 
-#[rustfmt::skip]
 fn compare_streams(probe1: Probe, probe2: Probe) -> Probe {
     let stream1 = &probe1.stream;
     let stream2 = &probe2.stream;
@@ -480,7 +495,6 @@ fn filter_redundant_tracks(streams: &mut Vec<Probe>) -> Vec<Probe> {
     return Vec::from_iter(unique_tracks.values().cloned());
 }
 
-#[rustfmt::skip]
 fn get_offset(file_path: &PathBuf, src2_path: &PathBuf) -> i32 {
     println!("Determining offsets for {}", src2_path.display());
     let ref_clip = file_path.parent().unwrap().join(format!("{}_clip.mkv",file_path.file_stem().unwrap().to_str().unwrap()));
@@ -519,16 +533,70 @@ fn get_offset(file_path: &PathBuf, src2_path: &PathBuf) -> i32 {
     return (offset * 1000.0) as i32
 }
 
-#[rustfmt::skip]
+fn title_case(title: String) -> String {
+    let lowercase_words: Vec<String> = vec_into!["a", "an", "and", "as", "at", "but", "by", "for", "in", "nor", "of", "on", "or", "so", "the", "to", "yet"];
+    let words = title.split(' ');
+    words.map(|word| if lowercase_words.contains(&word.to_lowercase()) { word.to_lowercase() } else { let c = word.chars().nth(0).unwrap(); word.replacen(c, c.to_uppercase().to_string().as_str(), 1) }).join(" ")
+}
+
+fn check_urls_for_file(source_urls: &Vec<String>, file_path: &PathBuf) -> Option<String> {
+    for url in source_urls {
+        let rq = reqwest::blocking::get(url).unwrap();
+        if !rq.status().is_success() {
+            eprintln!("Failed to process url! Code: {}", rq.status().as_u16());
+            continue;
+        }
+        let body = rq.text().unwrap();
+        if body.contains(&file_path.file_stem().unwrap().to_string_lossy().to_string()) {
+            return Some(url.clone());
+        }
+    }
+    println!("Filename not found on any URL!");
+    None
+}
+
 fn get_info(file_path: &PathBuf, src2_paths: &Option<PathBuf>, args: &Args) -> (Vec<Probe>,Vec<Probe>,Vec<Probe>) {
     println!("Collecting video information for {}", file_path.display());
     let file_base = file_path.file_stem().unwrap();
-    let episode = extract_episode_number(&file_base, args.episode_pattern.clone(), Some(args.season.clone())).unwrap_or("".into());
+    let episode = extract_episode_number(&file_base, "2".into(), Some(args.season.clone())).unwrap_or_default();
+    let mut tvdb = Tvdb::new();
+    tvdb.login(args.tvdb_key.clone()).unwrap();
+    let (series, movie, id) = tvdb.tvdb_lookup(args.series_info, args.imdb.as_ref(), &args.name).unwrap();
+    id.expect("TVDB id is not defined!");
+    let season_num = args.season.parse::<u8>().unwrap();
+    let episode_num = extract_episode_number(&file_base, "1".into(), Some(args.season.clone())).unwrap_or_default().parse::<u16>().unwrap();
+    let tvdb_episode = series.as_ref().map(|s| tvdb.get_series_episode_translation(id.unwrap(), "eng").map(|eps| eps.iter().filter(|ep| ep.season_number == Some(season_num as i32) && ep.number == Some(episode_num as i32)).nth(0).ok_or("Episode translation not found!".to_string()).cloned()).unwrap_or(tvdb.get_series_episode(id.unwrap(), season_num, episode_num).or(s.episodes.as_ref().map(|eps| eps.iter().filter(|ep| ep.season_number == Some(season_num as i32) && ep.number == Some(episode_num as i32)).nth(0).ok_or("Episode not found!".to_string()).cloned()).unwrap_or(Err("Episode not found!".to_string())))));
+    let banner = tvdb.get_artworks(id.unwrap(), series.is_some());
+    let translation = series.as_ref().map(|s| s.name_translations.as_ref().unwrap_or(&Vec::new()).contains(&"eng".into()).then(|| tvdb.get_translation(id.unwrap(), "eng", true))).or(movie.as_ref().map(|m| m.name_translations.as_ref().unwrap_or(&Vec::new()).contains(&"eng".into()).then(|| tvdb.get_translation(id.unwrap(), "eng", false)))).unwrap_or(None);
+    let synopsis = tvdb_episode.as_ref().map(|r| r.as_ref().map(|ep| ep.overview.as_ref()).unwrap_or(None)).unwrap_or(None);
+    let mut title = String::new();
+    if tvdb_episode.is_some() && tvdb_episode.as_ref().unwrap().is_ok() {
+        let series_translation = translation.as_ref().unwrap();
+        let series_title = title_case(series_translation.as_ref().map(|t| t.name.as_ref().unwrap()).unwrap_or(&args.name).clone());
+        let ep = tvdb_episode.as_ref().unwrap().as_ref().unwrap();
+        if ep.name.is_some() {
+            title = format!("{series_title} - {episode} - {}", ep.name.as_ref().unwrap());
+        } else {
+            title = format!("{series_title} - {episode}");
+        }
+        println!("Episode title: {title}");
+    }
+    if title.is_empty() {
+        println!("Unable to find episode title. Collecting more video information.");
+    }
+    let url = args.source_urls.as_ref().map(|urls| check_urls_for_file(urls, file_path)).unwrap_or(None);
+    let metadata = Metadata {
+        url: (url),
+        title: (!title.is_empty()).then_some(title),
+        banner: banner.ok().map(|b| b.image).unwrap_or(None),
+        id: Some(id.unwrap().to_string()),
+        synopsis: synopsis.cloned(),
+    };
     let ffprobe_input = ffprobe(file_path);
-    let mut video_streams = get_medium_streams(&ffprobe_input, &file_path, "video", None);
+    let mut video_streams = get_medium_streams(&ffprobe_input, &file_path, "video", None, Some(&metadata));
     let mut audio_streams = Vec::new();
     if args.audio == "1" || args.audio == "both" {
-        audio_streams = get_medium_streams(&ffprobe_input, &file_path, "audio", None);
+        audio_streams = get_medium_streams(&ffprobe_input, &file_path, "audio", None, Some(&metadata));
         for mut stream in &mut audio_streams {
             if args.original_audio {
                 break;
@@ -553,7 +621,7 @@ fn get_info(file_path: &PathBuf, src2_paths: &Option<PathBuf>, args: &Args) -> (
     }
     let mut subtitle_streams = Vec::new();
     if args.subs == "1" || args.subs == "both" {
-        subtitle_streams = get_medium_streams(&ffprobe_input, &file_path, "subtitle", None);
+        subtitle_streams = get_medium_streams(&ffprobe_input, &file_path, "subtitle", None, Some(&metadata));
     }
     if args.audio == "2" || args.audio == "both" || args.subs == "2" || args.subs == "both" {
         for path in src2_paths.clone().unwrap().read_dir().unwrap() {
@@ -567,8 +635,11 @@ fn get_info(file_path: &PathBuf, src2_paths: &Option<PathBuf>, args: &Args) -> (
             if (episode != "" && episode != episode_src2) || file_base != base {
                 continue;
             }
+            let url = args.source_urls.as_ref().map(|urls| check_urls_for_file(urls, &path)).unwrap_or(None);
+            let mut metadata = metadata.clone();
+            metadata.url = url;
             let ffprobe_input = ffprobe(&dir_entry.path());
-            let mut v_streams = get_medium_streams(&ffprobe_input, &dir_entry.path(), "video", None);
+            let mut v_streams = get_medium_streams(&ffprobe_input, &dir_entry.path(), "video", None, None);
             let video_stream = v_streams.get(0);
             let offset;
             if args.sync != 0 {
@@ -580,11 +651,11 @@ fn get_info(file_path: &PathBuf, src2_paths: &Option<PathBuf>, args: &Args) -> (
             }
             println!("{offset}");
             if args.lehmer_merge {
-                v_streams = get_medium_streams(&ffprobe_input, &dir_entry.path(), "video", Some(offset));
+                v_streams = get_medium_streams(&ffprobe_input, &dir_entry.path(), "video", Some(offset), Some(&metadata));
                 video_streams.append(&mut v_streams);
             }
             if args.audio == "2" || args.audio == "both" {
-                let mut a_streams = get_medium_streams(&ffprobe_input, &dir_entry.path(), "audio", Some(offset));
+                let mut a_streams = get_medium_streams(&ffprobe_input, &dir_entry.path(), "audio", Some(offset), Some(&metadata));
                 for mut stream in &mut audio_streams {
                     if args.original_audio {
                         break;
@@ -609,7 +680,7 @@ fn get_info(file_path: &PathBuf, src2_paths: &Option<PathBuf>, args: &Args) -> (
                 audio_streams.append(&mut a_streams);
             }
             if args.subs == "2" || args.subs == "both" {
-                let mut s_streams = get_medium_streams(&ffprobe_input, &dir_entry.path(), "subtitle", Some(offset));
+                let mut s_streams = get_medium_streams(&ffprobe_input, &dir_entry.path(), "subtitle", Some(offset), Some(&metadata));
                 subtitle_streams.append(&mut s_streams);
             }
         }
@@ -659,15 +730,13 @@ fn get_encoder_version(encoder: &str) -> Result<String, String> {
             .arg("-V")
             .output()
             .map_err(|_| "Failed to get encoder version!");
-        #[rustfmt::skip]
-        return Ok(format!("rav1e v{}", String::from_utf8(output.unwrap().stdout).unwrap().split(" ").nth(1).unwrap().to_string()));
+                return Ok(format!("rav1e v{}", String::from_utf8(output.unwrap().stdout).unwrap().split(" ").nth(1).unwrap().to_string()));
     } else if encoder == "svt-av1" {
         let output = Command::new(get_binary("SvtAv1EncApp"))
             .arg("--version")
             .output()
             .map_err(|_| "Failed to get encoder version!");
-        #[rustfmt::skip]
-        return Ok(format!("svt-av1-psy {}", String::from_utf8(output.unwrap().stdout).unwrap().split(' ').nth(1).unwrap().to_string()));
+                return Ok(format!("svt-av1-psy {}", String::from_utf8(output.unwrap().stdout).unwrap().split(' ').nth(1).unwrap().to_string()));
     } else if encoder == "opusenc" {
         let output = Command::new(get_binary("opusenc"))
             .arg("--version")
@@ -682,7 +751,6 @@ fn get_encoder_version(encoder: &str) -> Result<String, String> {
     }
 }
 
-#[rustfmt::skip]
 fn get_encoder_params(args: &Args, vinfo: &Vec<Probe>, speed: Option<u8>, quantizer: Option<f32>, encoder: Option<&str>, display: bool) -> String {
     let speed = speed.unwrap_or(args.speed);
     let q = quantizer.unwrap_or(args.quantizer);
@@ -697,31 +765,28 @@ fn get_encoder_params(args: &Args, vinfo: &Vec<Probe>, speed: Option<u8>, quanti
     let params = format!(" {}", args.parameters.as_deref().unwrap_or(" ".into()));
     let (cr, matrix, transfer, primaries) = vinfo[0].color_data(args.encoder == "rav1e");
     let result = if encoder == "svt-av1" {
-        format!("--crf {quantizer}{params} --preset {speed} --tune 3 --sharpness 2 --variance-boost-strength 4 --variance-octile 4 --frame-luma-bias 100 --keyint 0 --enable-dlf 2 --enable-cdef 0 --enable-restoration 0 --enable-tf 0 --color-range {cr} --matrix-coefficients {matrix} --transfer-characteristics {transfer} --color-primaries {primaries}")
+        format!("--crf {quantizer}{params} --preset {speed} --tune 3 --sharpness 2 --noise-norm-strength 4 --variance-boost-strength 4 --variance-octile 4 --frame-luma-bias 100 --keyint 0 --enable-dlf 2 --enable-cdef 0 --enable-restoration 0 --enable-tf 0 --color-range {cr} --matrix-coefficients {matrix} --transfer-characteristics {transfer} --color-primaries {primaries}")
     } else if encoder == "rav1e" {
         let tiles = args.tiles;
         format!("--quantizer {quantizer}{params} -s {speed} --tiles {tiles} --keyint 0 --no-scene-detection --range {cr} --matrix {matrix} --transfer {transfer} --primaries {primaries}")
     } else if encoder == "x264" {
         format!("-q 0")
     } else {
-        String::new()
+        unreachable!()
     };
-    if result.is_empty() {
-        panic!("Unsupported encoder!");
-    }
     return result;
 }
 
 fn get_grain_string(args: &Args) -> String {
     if args.diff_grain {
         return if args.lehmer_merge {
-            "diff + lehmer merge with vs-denoise: \"lowpass = lambda i: box_blur(i, passes=2)\""
+            "`diff` + lehmer merge with vs-denoise: `lowpass = lambda i: box_blur(i, passes=2)`"
                 .to_string()
         } else {
-            "diff".to_string()
+            "`diff`".to_string()
         };
     } else {
-        return format!("--iso {}", args.photon_noise);
+        return format!("`--iso {}`", args.photon_noise);
     }
 }
 
@@ -739,24 +804,25 @@ fn get_denoise_string(args: &Args) -> String {
 fn get_filter_string(args: &Args) -> String {
     let mut filter_string = String::new();
     if !args.no_denoise {
-        filter_string = format!("Denoise with vs-denoise: \"{}\"", get_denoise_string(&args));
+        filter_string = format!("Denoise with vs-denoise: `{}`", get_denoise_string(&args));
     }
     if args.dehalo {
         if !filter_string.is_empty() {
-            filter_string.push_str(", dering with vs-dehalo: \"planes=[0,1,2]\"");
+            filter_string.push_str(", dering with vs-dehalo: `planes=[0,1,2]`");
         } else {
-            filter_string = String::from("Dering with vs-dehalo: \"planes=[0,1,2]\"");
+            filter_string = String::from("Dering with vs-dehalo: `planes=[0,1,2]`");
         }
     }
     if !filter_string.is_empty() {
-        filter_string.push_str(", deband with vs-deband");
+        let temp = format!(", deband with vs-deband: `thr={}, planes=[0,1,2]", args.deband);
+        filter_string.push_str(&temp);
     } else {
-        filter_string = String::from("Deband with vs-deband");
+        filter_string = format!("Deband with vs-deband: `thr={}, planes=[0,1,2]", args.deband);
     }
     if args.retinex {
-        filter_string.push_str(", grain=0\" + retinex mask: \"rg_mode=0");
+        filter_string.push_str(", grain=0` + retinex mask: `rg_mode=0");
     }
-    filter_string.push_str("\", dither with vs-tools");
+    filter_string.push_str("`, dither with vs-tools");
     return filter_string;
 }
 
@@ -766,19 +832,21 @@ fn get_rescale_string(args: &Args) -> String {
         rescale_string = String::from("Rescale with vodesfunc: ");
         if args._match {
             rescale_string = format!(
-                "{rescale_string}\"native res with lvsfunc: \"target_height={}, target_width={}\"",
+                "{rescale_string}\"native res with lvsfunc: `target_height={}, target_width={}`",
                 args.height.unwrap(),
                 args.width.unwrap()
             );
         } else {
-            rescale_string = format!("{rescale_string}\"height={}, width={}", args.height.unwrap(), args.width.unwrap());
+            rescale_string = format!("{rescale_string}`height={}, width={}", args.height.unwrap(), args.width.unwrap());
         }
-        rescale_string = format!("{rescale_string}, kernel={}, border_handling={}\", upscaling with vs-scale: \"ArtCNN C16F64\", downscale with vs-kernels: \"Hermite(linear=True)\"", args.algo.as_ref().unwrap(), args.borders);
+        if args.shift.as_ref().is_some() {
+            rescale_string = format!("{rescale_string}, shift={}", args.shift.as_ref().unwrap());
+        }
+        rescale_string = format!("{rescale_string}, kernel={}(border_handling={})`, upscaling with vs-scale: `ArtCNN C16F64`, downscale with vs-kernels: `Hermite(linear=True)`", args.algo.as_ref().unwrap(), args.borders);
     }
     return rescale_string;
 }
 
-#[rustfmt::skip]
 fn get_source_string(file: &PathBuf, args: &Args, format: Option<String>) -> String {
     if args.source_filter == "lsmash" {
         let pass1 = format!("lsmas.LWLibavSource(r'{}', cachedir=r'{}', prefer_hw=3", file.display(), args.input_directory.display());
@@ -799,7 +867,6 @@ fn get_source_string(file: &PathBuf, args: &Args, format: Option<String>) -> Str
     }
 }
 
-#[rustfmt::skip]
 fn sd_script(vpy_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
     let mut file = File::create(vpy_path).unwrap();
     let source_string = get_source_string(&vinfo[0].file, &args, Some(vinfo[0].pix_fmt(true)));
@@ -817,7 +884,6 @@ fn get_descale_dimensions(height: &Option<u16>, width: &Option<u16>) -> (u16, u1
     }
 }
 
-#[rustfmt::skip]
 fn create_vpy_script(vpy_path: &PathBuf, file_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
     let mut file = File::create(vpy_path).unwrap();
     let source_string = get_source_string(&vinfo[0].file, &args, Some(vinfo[0].pix_fmt(true)));
@@ -859,7 +925,6 @@ fn create_vpy_script(vpy_path: &PathBuf, file_path: &PathBuf, args: &Args, vinfo
     file.write_all(contents.as_bytes()).unwrap();
 }
 
-#[rustfmt::skip]
 fn multi_script(vpy_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
     let mut vpy_file = File::create(vpy_path).unwrap();
     let source_string = get_source_string(&vinfo[0].file, &args, Some(vinfo[0].pix_fmt(true)));
@@ -867,7 +932,6 @@ fn multi_script(vpy_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
     vpy_file.write_all(content.as_bytes()).unwrap();
 }
 
-#[rustfmt::skip]
 fn denoise_script(vpy_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
     let mut vpy_file = File::create(vpy_path).unwrap();
     let source_string = get_source_string(&vinfo[0].file, &args, None);
@@ -879,7 +943,6 @@ fn denoise_script(vpy_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
     vpy_file.write_all(content.as_bytes()).unwrap();
 }
 
-#[rustfmt::skip]
 fn merge_script(vpy_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
     let mut vpy_file = File::create(vpy_path).unwrap();
     let (source1_string, source2_string) = (get_source_string(&vinfo[0].file, &args, None), get_source_string(&vinfo[1].file, &args, None));
@@ -887,7 +950,6 @@ fn merge_script(vpy_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
     vpy_file.write_all(content.as_bytes()).unwrap();
 }
 
-#[rustfmt::skip]
 fn scene_detection(vpy_path: &PathBuf, encode: &PathBuf, scenes: &PathBuf, temp: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
     let (cr, matrix, transfer, primaries) = vinfo[0].color_data(false);
     let (quantizer, speed) = (args.quantizer, args.speed);
@@ -914,7 +976,6 @@ fn quantizer_range(range: Option<String>, encoder: String) -> [f32; 2] {
     }
 }
 
-#[rustfmt::skip]
 fn calculate_quantizer(args: &Args, modifier: i8) -> f32 {
     let part1: f32 = args.quantizer + args.quantizer_calc * modifier as f32;
     let range = quantizer_range(args.quantizer_range.clone(), args.encoder.clone());
@@ -927,7 +988,6 @@ fn temp_path(file_path: &PathBuf, ext: &str) -> PathBuf {
     parent.join(format!("{}{}", base.to_str().unwrap(), ext))
 }
 
-#[rustfmt::skip]
 fn encode_file(scene_detect: &PathBuf, script: &PathBuf, encode: &PathBuf, temp: &PathBuf, scenes: &PathBuf, speed: Option<u8>, quantizer: Option<f32>, encoder: Option<&str>, keep: bool, args: &Args, vinfo: &Vec<Probe>) {
     let input = if args.no_filter {
         scene_detect
@@ -1126,7 +1186,6 @@ fn validate_overrides(scenes_path: &PathBuf, args: &Args) {
     serde_json::to_writer(writer, &scenes).unwrap();
 }
 
-#[rustfmt::skip]
 fn add_grain_table(encode: &PathBuf, grained: &PathBuf, photon_noise: u16) {
     Command::new(get_binary("grav1synth"))
         .args([
@@ -1188,7 +1247,6 @@ fn get_diff_grain(
     if grained_dir.try_exists().is_ok_and(|b| b == false) {
         std::fs::create_dir_all(&grained_dir).unwrap();
     }
-    // absolutely disgusting
     let matching_files = cleaned_dir.read_dir().unwrap().map(|f| {
         f.unwrap().path().file_stem().unwrap().to_string_lossy().to_string()
     });
@@ -1214,7 +1272,7 @@ fn get_tags(tags_file: &PathBuf, encoder_options: Option<String>, args: &Args) {
     if !args.single_pass {
         tags = format!("{tags}  <Tag>\n    <Simple>\n      <Name>Target SSIMULACRA 2</Name>\n      <String>Mean: {}</String>\n    </Simple>\n  </Tag>\n", args.target_quality);
     }
-    tags = format!("{tags}  <Tag>\n    <Simple>\n      <Name>Encoder settings</Name>\n      <String>{}: \"{}\"</String>\n    </Simple>\n  </Tag>\n", get_encoder_version(args.encoder.clone().as_str()).unwrap(), encoder_options.unwrap());
+    tags = format!("{tags}  <Tag>\n    <Simple>\n      <Name>Encoder settings</Name>\n      <String>{}: \"{}\"</String>\n    </Simple>\n  </Tag>\n", get_encoder_version(&args.encoder).unwrap(), encoder_options.unwrap());
     if !args.no_grain {
         tags = format!("{tags}  <Tag>\n    <Simple>\n      <Name>Film grain synthesis settings</Name>\n      <String>grav1synth: {}</String>\n    </Simple>\n  </Tag>\n", get_grain_string(&args));
     }
@@ -1227,6 +1285,267 @@ fn get_tags(tags_file: &PathBuf, encoder_options: Option<String>, args: &Args) {
     tags = format!("{tags}</Tags>");
     let mut file = File::create(tags_file).unwrap();
     file.write_all(tags.as_bytes()).unwrap();
+}
+
+fn take_screenshot(file_path: &PathBuf, source: &String, frame_num: usize, output_path: &PathBuf) -> Result<(), String> {
+    let args: Vec<String> = vec_into!["-hide_banner", "-v", "16", "-i", file_path.to_string_lossy().to_string(), "-vf", format!("select=eq(n,{frame_num}),drawtext=fontcolor=white:fontsize=24:text='{source} ({frame_num})':x=36:y=36"), "-frames:v", "1", "-lossless", "1", "-compression_level", "6", "-quality", "100", output_path.to_string_lossy().to_string()];
+    Command::new(get_binary("ffmpeg")).args(args).spawn().unwrap().wait().unwrap();
+    if output_path.try_exists().is_ok_and(|b| b==false) {
+        Err("FFmpeg failed to take screenshot!".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn upload_image(file_path: &PathBuf, key: &String) -> Result<String, String> {
+    if file_path.try_exists().is_ok_and(|b| b==false) {
+        return Err("File to upload doesn't exist!".into());
+    }
+    let client = reqwest::blocking::ClientBuilder::new().use_rustls_tls().build().unwrap();
+    let multipart = reqwest::blocking::multipart::Form::new().file("file", file_path.as_path()).unwrap();
+    let post = client.post("https://kek.sh/api/v1/posts").header("x-kek-auth", key).multipart(multipart).send().unwrap();
+    if !post.status().is_success() {
+        Err(format!("Failed to upload image: {}, {}", post.status().as_u16(), post.text().unwrap()))
+    } else {
+        let data = post.json::<HashMap<String, serde_json::Value>>().map_err(|e| e.to_string())?;
+        let filename = data.get("filename").ok_or("Failed to get filename entry from kek.sh api response!")?;
+        return Ok(filename.as_str().unwrap().into())
+    }
+}
+
+fn get_screenshots(file_path: &PathBuf, output_path: &PathBuf, vinfo: &Vec<Probe>, args: &Args) -> Screenshots {
+    let mut screenshots = Screenshots::default();
+    let threads = std::thread::available_parallelism().unwrap().get();
+    let api = vapoursynth::api::API::get().unwrap();
+    let core = api.create_core(threads as i32);
+    let algo = &args.source_filter;
+    let input_directory = &args.input_directory;
+    let decoder = if algo == "lsmash" {
+        lwlibavsource(&vinfo[0].file, &api, &core, "YUV420P8")
+    } else if algo == "bestsource" {
+        bestsource(&vinfo[0].file, &api, &core)
+    } else if algo == "dgdecnv" {
+        dgdecodenv(&vinfo[0].file, &api, &core)
+    } else {
+        unreachable!()
+    };
+    let frames = decoder.info().num_frames;
+    let first_frame = (300. * vinfo[0].fps()) as usize;
+    let last_frame = frames - first_frame;
+    assert!(frames > first_frame * 2 + 3, "Failed to find frames to screenshot! Is the source longer than 10 minutes?"); // just in case
+    let random_frames = Vec::with_capacity(3);
+    for _ in 0..3 {
+        let mut rng = rand::thread_rng().gen_range(first_frame..last_frame);
+        while random_frames.contains(&rng) {
+            rng = rand::thread_rng().gen_range(first_frame..last_frame);
+        }
+    }
+    for (i, rng) in random_frames.iter().enumerate() {
+        let source_image = input_directory.join(format!("{}_{i}.webp", file_path.file_stem().unwrap().to_str().unwrap()));
+        let encoded_image = input_directory.join(format!("{}_{i}.webp", output_path.file_stem().unwrap().to_str().unwrap()));
+        let key = args.kek_key.as_ref().unwrap();
+        let mut source_url = String::new();
+        let mut encode_url = String::new();
+        
+        if source_image.try_exists().is_ok_and(|b| b==false) {
+            take_screenshot(&file_path, &args.raws, *rng, &output_path).unwrap();
+            source_url = upload_image(&file_path, &key).inspect(|url| println!("Image uploaded: {url}")).unwrap_or_default();
+        }
+        if encoded_image.try_exists().is_ok_and(|b| b==false) {
+            take_screenshot(&output_path, &args.raws, *rng, &encoded_image).unwrap();
+            encode_url = upload_image(&encoded_image, &key).inspect(|url| println!("Image uploaded: {url}")).unwrap_or_default();
+        }
+        if !source_url.is_empty() {
+            screenshots.source.push(source_url);
+            screenshots.encode.push(encode_url);
+        } else {
+            println!("Unable to parse screenshot URLs! Be sure to edit torrent description.");
+        }
+    }
+    screenshots
+}
+
+fn generate_markdown_description(info: &Vec<Probe>) -> String {
+    let mut grouped_by_url: HashMap<String, Vec<Language>> = HashMap::new();
+    let mut seen_entries: Vec<(Language, String)> = Vec::new();
+
+    for entry in info {
+        let lang = entry.language();
+        let url = entry.meta.as_ref().map(|m| m.url.as_ref()).unwrap_or(None).cloned().unwrap_or_default();
+        if !seen_entries.contains(&(lang, url.clone())) {
+            seen_entries.push((lang, url.clone()));
+            let url_group = grouped_by_url.get_mut(&url);
+            if url_group.as_ref().is_some() {
+                url_group.unwrap().push(lang);
+            } else {
+                grouped_by_url.insert(url, vec![lang]);
+            }
+        }
+    }
+    let mut description_lines = Vec::new();
+    for (url, langs) in grouped_by_url {
+        let languages_str = langs.iter().join(", ");
+        description_lines.push(format!("[{languages_str}]({url})"));
+    }
+    description_lines.join(", ")
+}
+
+fn get_description(description_path: &PathBuf, vinfo: &Vec<Probe>, ainfo: &Vec<Probe>, sinfo: &Vec<Probe>, screenshots: Option<&Screenshots>, mediainfo: &String, args: &Args) {
+    let banner_string = if vinfo[0].meta.as_ref().is_some_and(|m| m.banner.as_ref().is_some()) {
+        let meta = vinfo[0].meta.as_ref().unwrap();
+        format!("[![Banner]({})](https://www.thetvdb.com/dereferrer/series/{})", meta.banner.as_ref().unwrap(), meta.id.as_ref().unwrap())
+    } else {
+        args.name.clone()
+    };
+    let source_string = if args.source_urls.as_ref().is_some() {
+        let meta = vinfo[0].meta.as_ref().unwrap();
+        format!("[{}]({})", args.raws, meta.url.as_ref().unwrap())
+    } else {
+        format!("[{}]", args.raws)
+    };
+    let atracks = generate_markdown_description(&ainfo);
+    let stracks = generate_markdown_description(&sinfo);
+    let opus_string = check_audio_encoding(&args.input_directory);
+    let audio_string = if !opus_string.is_empty() {
+        let opus_version = get_encoder_version("opusenc").unwrap();
+        format!("opusenc libopus {opus_version}: `{opus_string}` {atracks}")
+    } else {
+        atracks
+    };
+    let synopsis = vinfo[0].meta.as_ref().map(|m| m.synopsis.as_ref()).unwrap_or(None);
+    let mut description = format!("|{banner_string}|\n|:-:|\n");
+    if synopsis.as_ref().is_some() {
+        description = format!("{description}|*{}*|\n", synopsis.unwrap());
+    }
+    description = format!("{description}\n|Source|{source_string}|\n|----|----|\n|Audio|{audio_string}|\n|Subtitles|{stracks}|\n");
+    if !args.single_pass {
+        description = format!("{description}|Target SSIMU2| 16th percentile: {}|\n", args.target_quality);
+    }
+    description = format!("{description}|Encoder|{}: `{}`|\n", get_encoder_version(&args.encoder).unwrap(), get_encoder_params(&args, &vinfo, None, None, None, true));
+    if !args.no_grain {
+        description = format!("{description}|FGS|[grav1synth](https://github.com/rust-av/grav1synth): {}|\n", get_grain_string(&args));
+    }
+    if !args.no_filter {
+        description = format!("{description}|Filters|{}|\n", get_filter_string(&args));
+    }
+    if args.rescale {
+        description = format!("{description}|Rescale|{}|\n", get_rescale_string(&args));
+    }
+    if !args.no_screenshots {
+        let screenshots = screenshots.unwrap();
+        description = format!("{description}\n|Source|Encode|\n| ------------- |-------------|\n|[![source1]({})]({})|[![encode1]({})]({})|\n|[![source2]({})]({})|[![encode2]({})]({})|\n|[![source3]({})]({})|[![encode3]({})]({})|\n",
+        screenshots.source[0], screenshots.source[0], screenshots.encode[0], screenshots.encode[0],
+        screenshots.source[1], screenshots.source[1], screenshots.encode[1], screenshots.encode[1],
+        screenshots.source[2], screenshots.source[2], screenshots.encode[2], screenshots.encode[2]);
+    }
+    if !args.no_mediainfo {
+        description = format!("{description}\n[Mediainfo]({mediainfo})\n");
+    }
+    description = format!("{description}Interested in AV1?: [Discord](https://discord.gg/83dRFDFDp7)\nRecommended players: [MPV](https://thewiki.moe/tutorials/mpv), [MPC-HC](https://github.com/clsid2/mpc-hc)\n");
+    let mut out = File::create(&description_path).expect(&format!("Failed to open {} for writing!", description_path.display()));
+    out.write_all(&description.as_bytes()).expect(&format!("Failed to write to {}!", description_path.display()));
+}
+
+fn check_nyaa(torrent_path: &PathBuf, args: &Args) -> Result<Vec<String>, String> {
+    let torrent = lava_torrent::torrent::v1::Torrent::read_from_file(&torrent_path).map_err(|e| e.to_string())?;
+    let info_hash = torrent.info_hash();
+    let re = Regex::new("^[0-9a-fA-F]{40}$").unwrap();
+    if re.is_match(&info_hash).is_ok_and(|b| b==false) {
+        return Err(format!("Invalid info hash: {info_hash}"));
+    }
+    let api_host = if args.sukebei {
+        "https://sukebei.nyaa.si/api"
+    } else {
+        "https://nyaa.si/api"
+    };
+    let api_info_url = format!("{api_host}/info/{info_hash}");
+    let client = reqwest::blocking::ClientBuilder::new().use_rustls_tls().build().unwrap();
+    if args.nyaa_creds.as_ref().is_none() {
+        return Err("nyaa.si credentials weren't provided!".into());
+    }
+    let creds = args.nyaa_creds.as_ref().unwrap();
+    let (username, password) = (&creds[0], &creds[1]);
+    let response = client.get(api_info_url).basic_auth(username, Some(password)).send().unwrap();
+    if !response.status().is_success() {
+        return Err(format!("Failed to query Nyaa.si API! Status code: {}", response.status().as_u16()));
+    }
+    let data = serde_json::from_str::<HashMap<String, serde_json::Value>>(&response.text().unwrap()).map_err(|e| e.to_string())?;
+    if data.contains_key("errors") {
+        return Err(format!("API returned errors: {}", data.get("errors").unwrap()));
+    }
+    if data.len() != 0 {
+        let filesize = data.get("filesize").ok_or("\"filesize\" key was not present in nyaa.si API response!".to_string())?.as_u64().ok_or("Failed to convert \"filesize\" value to u64!".to_string())?;
+        let size = humansize::format_size(filesize, humansize::BINARY);
+        let mut flag_info: Vec<String> = Vec::with_capacity(3);
+        ["Trusted", "Complete", "Remake"].iter().for_each(|k| flag_info.push(format!("{k}: {}", if data.contains_key(&format!("is_{}", k.to_lowercase())) { "Yes" } else {"No"})));
+        let keys = data.iter().filter(|k| ["id","name","submitter","creation_date","main_category","sub_category"].contains(&k.0.as_str()));
+        let (id, name, submitter, creation_date, main_category, sub_category) = keys.map(|k| k.1).collect_tuple().unwrap();
+        let info_str = vec![
+            format!("Torrent #{id}: '{name}' ({size}) "),
+            format!("uploaded by {submitter}\n"),
+            format!("  {creation_date} [{main_category} - {sub_category}] "),
+            format!("[{flag_info:?}]")
+        ];
+        println!("{info_str:?}");
+        Ok(info_str)
+    } else {
+        Err("Torrent not found on nyaa.si!".into())
+    }
+}
+
+fn upload_torrent(torrent_path: &PathBuf, description_path: &PathBuf, vinfo: &Vec<Probe>, args: &Args) -> Result<String, String> {
+    let (api_host, category) = if args.sukebei {
+        ("https://sukebei.nyaa.si/api", "1_1")
+    } else {
+        ("https://nyaa.si/api", "1_2")
+    };
+    let api_upload_url = format!("{api_host}/upload");
+    let mut description_file = File::open(&description_path).expect("Failed to open description file!");
+    let mut description_string = String::new();
+    description_file.read_to_string(&mut description_string).expect("Failed to read description file!");
+    let remake = vinfo.len() < 2;
+    let name = if args.batch {
+        format!("{} (Batch)", torrent_path.file_stem().unwrap().to_str().unwrap())
+    } else {
+        format!("{} (Weekly)", torrent_path.file_stem().unwrap().to_str().unwrap())
+    };
+    let creds = args.nyaa_creds.as_ref().unwrap();
+    let (username, password) = (&creds[0], &creds[1]);
+    let client = reqwest::blocking::ClientBuilder::new().use_rustls_tls().build().unwrap();
+    let multipart = reqwest::blocking::multipart::Form::new().file("torrent", torrent_path.as_path()).unwrap();
+    let json = serde_json::json!({
+        "torrent_data": {
+            "name": name,
+            "category": category,
+            "information": "https://discord.gg/83dRFDFDp7",
+            "description": description_string,
+            "anonymous": false,
+            "hidden": false,
+            "complete": args.batch,
+            "remake": remake,
+            "trusted": false
+        }
+    });
+    let post = client.post(api_upload_url).basic_auth(username, Some(password)).multipart(multipart).json(&json).send().unwrap();
+    if post.status().is_success() {
+        return Err(format!("Bad response: {}", post.text().unwrap_or(String::new())));
+    }
+    let data = post.json::<HashMap<String, serde_json::Value>>().map_err(|e| e.to_string())?;
+    if data.contains_key("errors") {
+        let errors = data.get("errors").unwrap().as_object().unwrap();
+        let torrent = errors.get("torrent").unwrap().as_array().unwrap();
+        Err(format!("Upload failed: {}", torrent[0]))
+    } else {
+        let url = data.get("url").ok_or("Key \"url\" isn't present in nyaa.si API response!".to_string())?;
+        let name = data.get("name").ok_or("Key \"name\" isn't present in nyaa.si API response!".to_string())?;
+        let temp = format!("[Uploaded] {url} - '{name}'");
+        let result = if data.contains_key("magnet") {
+            format!("{temp}\n{}", data.get("magnet").unwrap())
+        } else {
+            temp
+        };
+        Ok(result)
+    }
 }
 
 fn mux_file(
@@ -1252,7 +1571,10 @@ fn mux_file(
         video_path.to_str().unwrap()
     ];
     let title = vinfo[0].stream.tags.title.as_ref();
-    if title.is_some() {
+    if vinfo[0].meta.as_ref().is_some_and(|m| m.title.is_some()) {
+        let title = vinfo[0].meta.as_ref().map(|m| m.title.as_ref()).unwrap_or(None);
+        arguments = [vec_into!["--title", title.unwrap()], arguments].concat();
+    } else if title.is_some() {
         arguments = [vec_into!["--title", title.unwrap()], arguments].concat();
     }
     let mut audio_files = Vec::new();
@@ -1316,8 +1638,12 @@ fn process_command(args: Args) {
     println!("Input directory: {:#?}", args.input_directory);
     let input_directory_exists = args.input_directory.try_exists().unwrap();
     assert!(input_directory_exists, "Input directory does not exist!");
+    let mut description_path: Option<PathBuf> = None;
     let mut torrent_path: Option<PathBuf> = None;
     let mut torrent_files: Option<PathBuf> = None;
+    let mut first_file: Option<PathBuf> = None;
+    let mut first_output: Option<PathBuf> = None;
+    let mut first_info = None;
     let mut src2_paths: Option<Vec<PathBuf>> = None;
     let mut encoder_options: Option<String> = None;
     for path in args.input_directory.read_dir().unwrap() {
@@ -1354,11 +1680,21 @@ fn process_command(args: Args) {
         if args.batch {
             torrent_files = Some(args.output_directory.clone());
             torrent_path = Some(args.input_directory.clone().join(format!(
-                    "{}.torrent",
-                    args.output_directory.clone().file_stem().unwrap().to_str().unwrap())));
+                "{}.torrent",
+                args.output_directory.clone().file_stem().unwrap().to_str().unwrap())));
+            description_path = Some(args.input_directory.clone().join(format!(
+                "{}.md",
+                args.output_directory.clone().file_stem().unwrap().to_str().unwrap())));
+            if first_file.as_ref().is_none() {
+                first_file = Some(file_path.clone());
+            }
+            if first_output.as_ref().is_none() {
+                first_output = Some(output_path.clone());
+            }
         } else {
             torrent_files = Some(output_path.clone());
             torrent_path = Some(args.input_directory.clone().join(format!("{filename_output}.torrent")));
+            description_path = Some(args.input_directory.clone().join(format!("{filename_output}.md")));
         }
         if !args.no_torrent
             && torrent_path.clone().unwrap().try_exists().is_ok_and(|b| b == true)
@@ -1394,6 +1730,9 @@ fn process_command(args: Args) {
             }
         }
         let (vinfo, ainfo, sinfo) = get_info(&file_path, &args.src2_directory, &args);
+        if first_info.as_ref().is_none() {
+            first_info = Some((vinfo.clone(), ainfo.clone(), sinfo.clone()));
+        }
         let (cr, matrix, transfer, primaries) = vinfo[0].color_data(args.encoder == "rav1e");
         encoder_options = Some(get_encoder_params(&args, &vinfo, None, None, None, true));
         let multi_speed: u8 = if args.encoder == "rav1e" { 10 } else { 8 };
@@ -1550,25 +1889,87 @@ fn process_command(args: Args) {
             mux_file(&video_path, &encode, &output_path, &tags, &vinfo, &ainfo, &sinfo, &args);
             println!("{filename_output} done!");
         }
-        if !args.batch && !args.no_torrent && torrent_path.clone().unwrap().try_exists().is_ok_and(|b| b == false) {
+        if !args.batch && !args.no_torrent && torrent_path.as_ref().unwrap().try_exists().is_ok_and(|b| b == false) {
             let opus_options: String = if src2_paths.is_some() {
                 check_audio_encoding(&args.src2_directory.clone().unwrap())
             } else {
                 check_audio_encoding(&args.input_directory.clone())
             };
             create_torrent(opus_options, encoder_options.clone().unwrap(), &torrent_path.clone().unwrap(), &torrent_files.clone().unwrap(), &args);
+            let mediainfo = if !args.no_mediainfo {
+                get_rentry(&output_path, &filename_output).expect("Failed to upload mediainfo to rentry!")
+            } else {
+                String::new()
+            };
+            if description_path.as_ref().unwrap().try_exists().is_ok_and(|b| b==false) {
+                let screenshots = if !args.no_screenshots {
+                    Some(get_screenshots(&file_path, &output_path, &vinfo, &args))
+                } else {
+                    None
+                };
+                get_description(description_path.as_ref().unwrap(), &vinfo, &ainfo, &sinfo, screenshots.as_ref(), &mediainfo, &args);
+            }
+            if args.review {
+                println!("PAUSED: Review and edit your description for {filename_output}. Ready to continue?");
+                print!("(yes/no): ");
+                io::stdout().flush().expect("Failed to flush!");
+                let mut input: String = String::new();
+                io::stdin().read_line(&mut input).expect("Failed to read input!");
+                if input.to_lowercase() != "yes\n" {
+                    eprintln!("\nAborted. Exiting script.");
+                    exit(0);
+                }
+                println!("Continuing to upload.");
+            }
+            if !args.no_upload {
+                let already_uploaded = check_nyaa(&torrent_path.as_ref().unwrap(), &args);
+                if already_uploaded.is_err() {
+                    println!("{}", upload_torrent(&torrent_path.as_ref().unwrap(), &description_path.as_ref().unwrap(), &vinfo, &args).unwrap());
+                }
+            }
         }
     }
-    if args.batch &&
-        !args.no_torrent &&
-        torrent_path.clone().is_some() &&
-        torrent_path.clone().unwrap().try_exists().is_ok_and(|b| b == false)
-    {
+    if args.batch {
+        let info = first_info.as_ref().unwrap();
+        let (vinfo, ainfo, sinfo) = (&info.0, &info.1, &info.2);
         let opus_options: String = if src2_paths.is_some() {
             check_audio_encoding(&args.src2_directory.clone().unwrap())
         } else {
             check_audio_encoding(&args.input_directory.clone())
         };
-        create_torrent(opus_options, encoder_options.unwrap(), &torrent_path.unwrap(), &torrent_files.unwrap(), &args);
+        if !args.no_torrent && torrent_path.as_ref().is_some_and(|t| t.try_exists().is_ok_and(|b| b==false)) {
+            create_torrent(opus_options, encoder_options.unwrap(), &torrent_path.as_ref().unwrap(), &torrent_files.unwrap(), &args);
+        }
+        let media_info = if !args.no_mediainfo {
+            get_rentry(&first_output.as_ref().unwrap(), &args.output_directory.file_name().unwrap().to_string_lossy().to_string()).unwrap()
+        } else {
+            String::new()
+        };
+        if description_path.as_ref().is_some_and(|p| p.try_exists().is_ok_and(|b| b==false)) {
+            let screenshots = if !args.no_screenshots {
+                Some(get_screenshots(&first_file.as_ref().unwrap(), &first_output.as_ref().unwrap(), &vinfo, &args))
+            } else {
+                None
+            };
+            get_description(&description_path.as_ref().unwrap(), &vinfo, &ainfo, &sinfo, screenshots.as_ref(), &media_info, &args);
+        }
+        if args.review {
+            println!("PAUSED: Review and edit your description for {}. Ready to continue?", torrent_path.as_ref().unwrap().display());
+            print!("(yes/no): ");
+            io::stdout().flush().expect("Failed to flush!");
+            let mut input: String = String::new();
+            io::stdin().read_line(&mut input).expect("Failed to read input!");
+            if input.to_lowercase() != "yes\n" {
+                eprintln!("\nAborted. Exiting script.");
+                exit(0);
+            }
+            println!("Continuing to upload.");
+        }
+        if !args.no_upload {
+            let already_uploaded = check_nyaa(&torrent_path.as_ref().unwrap(), &args);
+            if already_uploaded.is_err() {
+                println!("{}", upload_torrent(&torrent_path.as_ref().unwrap(), &description_path.as_ref().unwrap(), &vinfo, &args).unwrap());
+            }
+        }
     }
 }

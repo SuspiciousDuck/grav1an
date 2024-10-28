@@ -111,6 +111,7 @@ pub struct Args {
         long,
         default_value_if("encoder", "rav1e", "100"),
         default_value = "40.0",
+        hide_default_value = true,
         visible_alias = "crf"
     )]
     pub quantizer: f32,
@@ -120,6 +121,7 @@ pub struct Args {
         long,
         default_value_if("encoder", "rav1e", "2"),
         default_value = "4",
+        hide_default_value = true,
         visible_alias = "preset"
     )]
     pub speed: u8,
@@ -135,13 +137,15 @@ pub struct Args {
     /// Adjust quality per scene with multipass encoding to target mean SSIMU2 score
     #[arg(long, default_value_t = 70.0)]
     pub target_quality: f32,
+    /// How often frames are scored for target quality
     #[arg(short, long, default_value_t = 10)]
     pub cycle: u8,
     /// Q/crf range for target quality calculations [default: 30 (rav1e)/7.5 (svt-av1)]
     #[arg(
         long,
         default_value_t = 7.5,
-        default_value_if("encoder", "rav1e", "30")
+        default_value_if("encoder", "rav1e", "30"),
+        hide_default_value = true
     )]
     pub quantizer_calc: f32,
     /// Q/crf range allowed for final pass [default: [40,160] (rav1e)/[25,55] (svt-av1)]
@@ -188,13 +192,40 @@ pub struct Args {
     /// Skip creating a torrent file
     #[arg(long, num_args = 0, default_value_t = false)]
     pub no_torrent: bool,
-    /// Url for source file
+    /// TVDB series ID
     #[arg(long, default_value = None)]
-    pub source_url: Option<String>,
+    pub series_info: Option<u32>,
+    /// Comma-separated URLs for sources
+    #[arg(long, default_value = None, value_delimiter = ',', num_args = 1..)]
+    pub source_urls: Option<Vec<String>>,
     /// Url for series info
     #[arg(long, default_value = None)]
     pub source_info: Option<String>,
     /// Single batch torrent
     #[arg(short, long, num_args = 0, default_value_t = false)]
     pub batch: bool,
+    /// IMDB code for source
+    #[arg(long, default_value = None)]
+    pub imdb: Option<String>,
+    /// TVDB key
+    #[arg(long, default_value = "0763dabc-2f88-46bc-9965-5d70449b3eb8")]
+    pub tvdb_key: String,
+    /// kek.sh key
+    #[arg(long, conflicts_with = "no_screenshots", required_unless_present = "no_screenshots", default_value = None)]
+    pub kek_key: Option<String>,
+    /// nyaa.si username and password
+    #[arg(long, num_args = 2, value_names(["USERNAME", "PASSWORD"]), conflicts_with = "no_upload", required_unless_present = "no_upload", default_value = None)]
+    pub nyaa_creds: Option<Vec<String>>,
+    /// Skip uploading mediainfo
+    #[arg(long, num_args = 0, default_value_t = false)]
+    pub no_mediainfo: bool,
+    /// Skip uploading to Nyaa.si
+    #[arg(long, num_args = 0, default_value_t = false)]
+    pub no_upload: bool,
+    /// Skip uploading screenshots
+    #[arg(long, num_args = 0, default_value_t = false)]
+    pub no_screenshots: bool,
+    /// Upload to sukebei
+    #[arg(long, num_args = 0, default_value_t = false)]
+    pub sukebei: bool,
 }

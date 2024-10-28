@@ -1,9 +1,18 @@
 use super::{get_encoder_version, get_filter_string, get_grain_string, get_rescale_string, Args};
 use core::str;
+use std::collections::HashMap;
 use lava_torrent::bencode::BencodeElem::{Integer as bInt, String as bString};
 use lava_torrent::torrent::v1::TorrentBuilder;
+use reqwest::header::{HeaderMap, HeaderValue, REFERER};
 use std::path::PathBuf;
+use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+fn random_string() -> String {
+    let chars = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'];
+    let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs().to_string();
+    time.chars().map(|c| chars[c.to_digit(10).unwrap() as usize]).collect::<String>()
+}
 
 fn pieces(file: &PathBuf) -> u64 {
     let size = file.metadata().unwrap().len();
@@ -29,21 +38,20 @@ pub fn create_torrent(
     torrent_files: &PathBuf,
     args: &Args,
 ) {
-    let mut comment_string;
-    if args.source_info.clone().is_some() {
-        comment_string = format!("Source: {}\n", args.source_info.clone().unwrap().clone());
-    } else {
-        comment_string = "AV1 encode with some filters\n".into();
+    let mut comment_string = String::new();
+    if args.series_info.as_ref().is_some() {
+        comment_string = format!("Series: https://www.thetvdb.com/dereferrer/series/{}\n", args.series_info.as_ref().unwrap());
     }
+    comment_string = format!("{comment_string}AV1 encode with some filters\n");
     if !args.single_pass {
         comment_string = format!(
-            "{comment_string}Target SSIMULACRA 2: Mean: {}\n",
+            "{comment_string}Target SSIMULACRA 2: 16th percentile: {}\n",
             args.target_quality
         );
     }
     comment_string = format!(
         "{comment_string}Encoding settings: {}: \"{}\"",
-        get_encoder_version(args.encoder.clone().as_str()).unwrap(),
+        get_encoder_version(&args.encoder).unwrap(),
         encoder_options
     );
     if opus_options != "" {
@@ -93,20 +101,72 @@ pub fn create_torrent(
         .add_extra_field("creation date".into(), bInt(creation_date as i64))
         .add_extra_field("comment".into(), bString(comment_string.clone()))
         .add_extra_field("created by".into(), bString(args.group.clone()));
-    if args.source_url.is_some() {
+    if args.source_urls.is_some() {
         torrent_build = torrent_build
             .clone()
-            .add_extra_info_field("source".into(), bString(args.source_url.clone().unwrap()));
+            .add_extra_info_field("source".into(), bString(args.source_urls.as_ref().unwrap_or(&vec![]).join(", ")));
     }
     let torrent = torrent_build.build().unwrap();
     torrent.write_into_file(&torrent_path).unwrap();
     let open = open::that(&torrent_path);
     if open.is_err() {
-        eprintln!("Failed to open {} automatically.", torrent_path.display());
+        eprintln!("Failed to open {} automatically!", torrent_path.display());
     }
     println!(
         "Torrent for {} done at {}",
         torrent_files.display(),
         torrent_path.display()
     );
+}
+
+pub fn get_rentry(output_path: &PathBuf, filename_output: &String) -> Result<String, String> {
+    let hasher = format!("{:x}", md5::compute(filename_output)).chars().take(8).collect::<String>();
+    let mut headers = HeaderMap::new();
+    headers.insert(REFERER, HeaderValue::from_static("https://rentry.co"));
+    let client = reqwest::blocking::ClientBuilder::new().default_headers(headers).use_rustls_tls().build().unwrap();
+    let check = client.get(format!("https://rentry.co/api/raw/{}", hasher.as_str())).send().unwrap();
+    if !check.status().is_success() {
+        return Err("Failed to make request to rentry.co!".into());
+    }
+    let json = check.json::<HashMap<String, String>>().map_err(|e| e.to_string())?;
+    if json.get("status").unwrap() == "200" {
+        println!("Entry already exists at URL: https://rentry.co/{hasher}");
+        return Ok(hasher);
+    }
+    eprintln!("Rentry URL does not exist, proceeding with upload...");
+    let mut media = mediainfo::MediaInfo::new();
+    media.open(&output_path).expect("MediaInfo failed to open output file!");
+    let info = media.inform().expect("MediaInfo failed to get output data!").replace(output_path.to_str().unwrap(), output_path.file_name().unwrap().to_str().unwrap());
+    media.close();
+    let csrftoken_rq = client.get("https://rentry.co").send().unwrap();
+    if !csrftoken_rq.status().is_success() {
+        return Err("Failed to make request to rentry.co!".into());
+    }
+    let cookie = csrftoken_rq.headers().get("Set-Cookie").expect("Failed to get Set-Cookie header!").to_str().unwrap();
+    let csrftoken = cookie.split(';').next().unwrap().split('=').nth(1).unwrap();
+    let edit_code = random_string();
+    let json = json!({
+        "csrfmiddlewaretoken": csrftoken,
+        "url": hasher,
+        "edit_code": edit_code,
+        "text": info
+    });
+    println!("Rentry edit code: {edit_code}");
+    let post_rq = client.post("https://rentry.co/api/new").json(&json).send().unwrap();
+    if !post_rq.status().is_success() {
+        return Err("Failed to make POST request to rentry.co!".into());
+    }
+    let response = post_rq.json::<HashMap<String, String>>().unwrap();
+    if response.get("status").unwrap() == "200" {
+        let url = response.get("url").map(|e| e.to_owned()).ok_or("Rentry upload response returned no url!".to_string())?;
+        println!("Rentry upload successful! URL: {}", url);
+        println!("Edit code: {}", response.get("edit_code").unwrap_or(&edit_code));
+        Ok(url)
+    } else {
+        let mut err = format!("Error: {}", response.get("content").unwrap());
+        if response.contains_key("errors") {
+            err = format!("Details: {}", response.get("errors").unwrap());
+        }
+        Err(err)
+    }
 }
