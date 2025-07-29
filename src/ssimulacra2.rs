@@ -1,6 +1,4 @@
 use av_metrics_decoders::{Decoder, VapoursynthDecoder};
-use vapoursynth::core::CoreRef;
-use vapoursynth::prelude::*;
 use crossterm::tty::IsTty;
 use indicatif::{HumanDuration, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use ssimulacra2::{
@@ -9,12 +7,14 @@ use ssimulacra2::{
 };
 use std::cmp::min;
 use std::collections::BTreeMap;
-use std::io::{stderr, prelude::*};
+use std::io::{prelude::*, stderr};
 use std::path::{absolute as abs, PathBuf};
+use std::process::exit;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::available_parallelism;
 use std::time::Duration;
-use std::process::exit;
+use vapoursynth::core::CoreRef;
+use vapoursynth::prelude::*;
 
 trait FromSize {
     fn from_size(width: usize, height: usize, matrix: Option<Matrices>) -> Self;
@@ -50,8 +50,8 @@ impl FromSize for Primaries {
     }
 }
 
-fn to_primaries(input: String) -> Primaries {
-    match input.as_str() {
+fn to_primaries(input: &str) -> Primaries {
+    match input {
         "bt709" => Primaries::BT709,
         "bt470m" => Primaries::BT470M,
         "bt470bg" => Primaries::BT470BG,
@@ -68,8 +68,8 @@ fn to_primaries(input: String) -> Primaries {
     }
 }
 
-fn to_matrices(input: String) -> Matrices {
-    match input.as_str() {
+fn to_matrices(input: &str) -> Matrices {
+    match input {
         "rgb" => Matrices::Identity,
         "bt709" => Matrices::BT709,
         "fcc" => Matrices::BT470M,
@@ -87,8 +87,8 @@ fn to_matrices(input: String) -> Matrices {
     }
 }
 
-fn to_transfers(input: String) -> Transfers {
-    match input.as_str() {
+fn to_transfers(input: &str) -> Transfers {
+    match input {
         "bt709" => Transfers::BT1886,
         "gamma22" => Transfers::BT470M,
         "gamma28" => Transfers::BT470BG,
@@ -249,10 +249,18 @@ fn calc_score<S: Pixel, D: Pixel, E: Decoder, F: Decoder>(
 }
 
 fn lwlibavsource<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>, format: &str) -> Node<'a> {
-    let lsmas = core.get_plugin_by_namespace("lsmas").unwrap().expect("Failed to find lsmas namespace! Is the plugin installed?");
+    let lsmas = core
+        .get_plugin_by_namespace("lsmas")
+        .unwrap()
+        .expect("Failed to find lsmas namespace! Is the plugin installed?");
     let mut args = OwnedMap::new(*api);
-    args.set_data("source", file.to_str().unwrap().as_bytes()).unwrap();
-    args.set_data("cachedir", file.parent().unwrap().to_str().unwrap().as_bytes()).unwrap();
+    args.set_data("source", file.to_str().unwrap().as_bytes())
+        .unwrap();
+    args.set_data(
+        "cachedir",
+        file.parent().unwrap().to_str().unwrap().as_bytes(),
+    )
+    .unwrap();
     args.set_data("format", format.as_bytes()).unwrap();
     args.set_int("prefer_hw", 3).unwrap();
     let func = lsmas.invoke("LWLibavSource", &args).unwrap();
@@ -263,14 +271,24 @@ fn lwlibavsource<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>, format: &str
 }
 
 fn bestsource<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>) -> Node<'a> {
-    let bs = core.get_plugin_by_namespace("bs").unwrap().expect("Failed to find bs namespace! Is the plugin installed?");
+    let bs = core
+        .get_plugin_by_namespace("bs")
+        .unwrap()
+        .expect("Failed to find bs namespace! Is the plugin installed?");
     let abspath = abs(file.parent().unwrap()).unwrap();
-    let mut root = abspath.components().next().unwrap().as_os_str().to_string_lossy().to_string();
+    let mut root = abspath
+        .components()
+        .next()
+        .unwrap()
+        .as_os_str()
+        .to_string_lossy()
+        .to_string();
     if !root.ends_with('/') {
         root.push('/');
     }
     let mut args = OwnedMap::new(*api);
-    args.set_data("source", abs(file).unwrap().to_str().unwrap().as_bytes()).unwrap();
+    args.set_data("source", abs(file).unwrap().to_str().unwrap().as_bytes())
+        .unwrap();
     args.set_data("cachepath", root.as_bytes()).unwrap();
     let func = bs.invoke("VideoSource", &args).unwrap();
     if func.error().is_some() {
@@ -280,9 +298,13 @@ fn bestsource<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>) -> Node<'a> {
 }
 
 fn dgdecodenv<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>) -> Node<'a> {
-    let dgdecodenv = core.get_plugin_by_namespace("dgdecodenv").unwrap().expect("Failed to find dgdecodenv namespace! Is the plugin installed?");
+    let dgdecodenv = core
+        .get_plugin_by_namespace("dgdecodenv")
+        .unwrap()
+        .expect("Failed to find dgdecodenv namespace! Is the plugin installed?");
     let mut args = OwnedMap::new(*api);
-    args.set_data("source", file.to_str().unwrap().as_bytes()).unwrap();
+    args.set_data("source", file.to_str().unwrap().as_bytes())
+        .unwrap();
     let func = dgdecodenv.invoke("DGSource", &args).unwrap();
     if func.error().is_some() {
         panic!("{}", func.error().unwrap());
@@ -290,12 +312,23 @@ fn dgdecodenv<'a>(file: &PathBuf, api: &API, core: &CoreRef<'a>) -> Node<'a> {
     func.get_node("clip").unwrap()
 }
 
-pub fn get_vs_ssimu2(src: &PathBuf, distorted: &PathBuf, cycle: u8, algo: &String) -> BTreeMap<usize, f64> {
+pub fn get_vs_ssimu2(
+    src: &PathBuf,
+    distorted: &PathBuf,
+    cycle: u8,
+    algo: &String,
+) -> BTreeMap<usize, f64> {
     let threads = available_parallelism().unwrap().get();
     let api = API::get().unwrap();
     let core = api.create_core(threads as i32);
-    let vszip = core.get_plugin_by_namespace("vszip").unwrap().expect("Failed to find vszip namespace! Is the plugin installed?");
-    let skip_content = if src.extension().is_some_and(|e| e.to_ascii_lowercase() == "vpy") {
+    let vszip = core
+        .get_plugin_by_namespace("vszip")
+        .unwrap()
+        .expect("Failed to find vszip namespace! Is the plugin installed?");
+    let skip_content = if src
+        .extension()
+        .is_some_and(|e| e.to_ascii_lowercase() == "vpy")
+    {
         Some(Environment::from_file(src, EvalFlags::Nothing).unwrap())
     } else {
         None
@@ -359,7 +392,10 @@ pub fn get_vs_ssimu2(src: &PathBuf, distorted: &PathBuf, cycle: u8, algo: &Strin
         jobs += 1;
         scored_node.get_frame_async(index, |frame, n, _| {
             let frame = frame.expect("Failed to generate frame!");
-            let score = frame.props().get_float("_SSIMULACRA2").expect("Failed to get SSIMULACRA2 score!");
+            let score = frame
+                .props()
+                .get_float("_SSIMULACRA2")
+                .expect("Failed to get SSIMULACRA2 score!");
             results.insert(n * cycle as usize, score);
             avg = avg + (score - avg) / (min(results.len(), 10) as f64);
             if progress.is_finished() {
@@ -382,7 +418,9 @@ pub fn get_vs_ssimu2(src: &PathBuf, distorted: &PathBuf, cycle: u8, algo: &Strin
             print!("(yes/no): ");
             std::io::stdout().flush().expect("Failed to flush!");
             let mut input: String = String::new();
-            std::io::stdin().read_line(&mut input).expect("Failed to read input!");
+            std::io::stdin()
+                .read_line(&mut input)
+                .expect("Failed to read input!");
             if input != "yes\n" {
                 eprintln!("\nAborted. Exiting script.");
                 exit(0);
@@ -396,9 +434,20 @@ pub fn get_vs_ssimu2(src: &PathBuf, distorted: &PathBuf, cycle: u8, algo: &Strin
     results
 }
 
-pub fn get_ssimu2(src: &PathBuf, distorted: &PathBuf, cycle: u8, cr: String, matrix: String, transfer: String, primaries: String) -> BTreeMap<usize, f64> {
+pub fn get_ssimu2(
+    src: &PathBuf,
+    distorted: &PathBuf,
+    cycle: u8,
+    cr: &str,
+    matrix: &str,
+    transfer: &str,
+    primaries: &str,
+) -> BTreeMap<usize, f64> {
     let threads = available_parallelism().unwrap().get() / 2usize;
-    let skip_content = if src.extension().is_some_and(|e| e.to_ascii_lowercase() == "vpy") {
+    let skip_content = if src
+        .extension()
+        .is_some_and(|e| e.to_ascii_lowercase() == "vpy")
+    {
         VapoursynthDecoder::new_from_script(&src).unwrap()
     } else {
         VapoursynthDecoder::new_from_video(&src).unwrap()
@@ -416,13 +465,24 @@ pub fn get_ssimu2(src: &PathBuf, distorted: &PathBuf, cycle: u8, cr: String, mat
     let src_info = skip_content.get_video_details();
     let distort_info = distort_content.get_video_details();
     let src_ss = src_info.chroma_sampling.get_decimation().unwrap_or((0, 0));
-    let dist_ss = distort_info.chroma_sampling.get_decimation().unwrap_or((0, 0));
+    let dist_ss = distort_info
+        .chroma_sampling
+        .get_decimation()
+        .unwrap_or((0, 0));
     let (width, height) = (src_info.width, src_info.height);
     let (range, matrices, transfers, _primaries): (bool, Matrices, Transfers, Primaries);
     range = cr == "pc" || cr == "jpeg" || cr == "full";
-    matrices = if to_matrices(matrix.clone()) != Matrices::Unspecified { to_matrices(matrix.clone()) } else { Matrices::from_size(width, height, None) };
-    transfers = to_transfers(transfer.clone());
-    _primaries = if to_primaries(primaries.clone()) != Primaries::Unspecified { to_primaries(primaries.clone()) } else { Primaries::from_size(width, height, Some(matrices)) };
+    matrices = if to_matrices(matrix) != Matrices::Unspecified {
+        to_matrices(matrix)
+    } else {
+        Matrices::from_size(width, height, None)
+    };
+    transfers = to_transfers(transfer);
+    _primaries = if to_primaries(primaries) != Primaries::Unspecified {
+        to_primaries(primaries)
+    } else {
+        Primaries::from_size(width, height, Some(matrices))
+    };
     let src_config = YuvConfig {
         bit_depth: src_info.bit_depth as u8,
         subsampling_x: src_ss.0 as u8,
@@ -442,44 +502,24 @@ pub fn get_ssimu2(src: &PathBuf, distorted: &PathBuf, cycle: u8, cr: String, mat
     for _ in 0..threads {
         let decoders = Arc::clone(&decoders);
         let result_tx = result_tx.clone();
-        std::thread::spawn(move || {
-            loop {
-                let score = match (src_info.bit_depth, distort_info.bit_depth) {
-                    (8, 8) => calc_score::<u8, u8, _, _>(
-                        &decoders,
-                        &src_config,
-                        &dst_config,
-                        1,
-                        false,
-                    ),
-                    (8, _) => calc_score::<u8, u16, _, _>(
-                        &decoders,
-                        &src_config,
-                        &dst_config,
-                        1,
-                        false,
-                    ),
-                    (_, 8) => calc_score::<u16, u8, _, _>(
-                        &decoders,
-                        &src_config,
-                        &dst_config,
-                        1,
-                        false,
-                    ),
-                    (_, _) => calc_score::<u16, u16, _, _>(
-                        &decoders,
-                        &src_config,
-                        &dst_config,
-                        1,
-                        false,
-                    ),
-                };
-
-                if let Some(result) = score {
-                    result_tx.send(result).unwrap();
-                } else {
-                    break;
+        std::thread::spawn(move || loop {
+            let score = match (src_info.bit_depth, distort_info.bit_depth) {
+                (8, 8) => calc_score::<u8, u8, _, _>(&decoders, &src_config, &dst_config, 1, false),
+                (8, _) => {
+                    calc_score::<u8, u16, _, _>(&decoders, &src_config, &dst_config, 1, false)
                 }
+                (_, 8) => {
+                    calc_score::<u16, u8, _, _>(&decoders, &src_config, &dst_config, 1, false)
+                }
+                (_, _) => {
+                    calc_score::<u16, u16, _, _>(&decoders, &src_config, &dst_config, 1, false)
+                }
+            };
+
+            if let Some(result) = score {
+                result_tx.send(result).unwrap();
+            } else {
+                break;
             }
         });
     }

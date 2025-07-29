@@ -1,5 +1,5 @@
-use core::str;
 use clap::Parser;
+use core::str;
 use fancy_regex::Regex;
 use futures::io::AllowStdIo as asyncio;
 use isolang::Language;
@@ -7,19 +7,21 @@ use itertools::Itertools;
 use phf::phf_map;
 use polyfit_rs::polyfit_rs::polyfit;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
 use statrs::statistics::{Distribution, Median, OrderStatistics};
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::path::Path;
 use std::process::{exit, Command, Stdio};
 use std::{fmt::Debug, fs::File, path::absolute as abs, path::PathBuf};
 use which::which;
-mod ssimulacra2;
 mod args;
+mod ssimulacra2;
 mod torrent;
 use self::args::Args;
-use self::torrent::create_torrent;
 use self::ssimulacra2::*;
+use self::torrent::create_torrent;
 
 // mixing &str and String is painful
 macro_rules! vec_into {
@@ -125,23 +127,22 @@ impl Probe {
         }
         let _code = lang.unwrap().split('-').next().unwrap().to_string();
         let code = _code.as_str();
-        let _general_lang = if code.len() == 3 {
-            return Language::from_639_3(code).unwrap_or(Language::Und);
+        if code.len() == 3 {
+            Language::from_639_3(code).unwrap_or(Language::Und)
         } else {
-            return Language::from_639_1(code).unwrap_or(Language::Und);
-        };
+            Language::from_639_1(code).unwrap_or(Language::Und)
+        }
     }
     fn bit_rate(&self) -> u32 {
         let bps = self.stream.tags.bps.clone();
-        return bps.or(Some(0.to_string())).unwrap().parse().unwrap();
+        bps.unwrap_or(0.to_string()).parse().unwrap()
     }
     fn pix_fmt(&self, vs: bool) -> String {
         let pix_fmt = &self.stream.pix_fmt;
         if pix_fmt.is_none() {
-            return String::new();
-        }
-        if !vs {
-            return pix_fmt.clone().unwrap();
+            String::new()
+        } else if !vs {
+            pix_fmt.clone().unwrap()
         } else {
             let mut upper = pix_fmt.clone().unwrap().to_uppercase();
             if upper.ends_with("P") {
@@ -150,12 +151,12 @@ impl Probe {
             if upper == "XYZ12LE" {
                 upper = upper.replace("LE", "");
             }
-            return upper;
+            upper
         }
     }
     fn ratio(&self) -> f64 {
         let stream = &self.stream;
-        let dar = stream.display_aspect_ratio.clone().unwrap_or(String::new());
+        let dar = stream.display_aspect_ratio.clone().unwrap_or_default();
         // very convoluted
         #[rustfmt::skip]
         let (width, height) = if dar != String::new() {
@@ -188,8 +189,12 @@ impl Probe {
                 "jpeg" => "full",
                 "full" => "full",
             };
-            #[rustfmt::skip]
-            return (rav1e_range.get(range.as_str()).unwrap().to_string(),matrix,transfer,primaries);
+            (
+                rav1e_range.get(&range).unwrap().to_string(),
+                matrix,
+                transfer,
+                primaries,
+            )
         } else {
             let svt_range = phf_map! {
                 "tv" => "0",
@@ -204,7 +209,11 @@ impl Probe {
                 "bt709" => "1",
                 "fcc" => "4",
                 "bt470bg" => "5",
-                "bt601" => "6",
+                "bt601" => "6", // im guessing my past self was cross-referencing the available
+                                // color properties from the svt-av1 Parameters.md page and chose
+                                // to leave bt601 as 6 even though it wasnt in the ffmpeg
+                                // colorspace page. im going to leave it here just in case though.
+                "smpte170m" => "6",
                 "smpte240" => "7",
                 "ycgco" => "8",
                 "bt2020ncl" => "9",
@@ -219,6 +228,7 @@ impl Probe {
                 "bt470m" => "4",
                 "bt470bg" => "5",
                 "bt601" => "6",
+                "smpte170m" => "6",
                 "smpte240" => "7",
                 "linear" => "8",
                 "log100" => "9",
@@ -237,6 +247,7 @@ impl Probe {
                 "bt470m" => "4",
                 "bt470bg" => "5",
                 "bt601" => "6",
+                "smpte170m" => "6",
                 "smpte240" => "7",
                 "genericfilm" => "8",
                 "bt2020" => "9",
@@ -245,14 +256,18 @@ impl Probe {
                 "smpte432" => "12",
                 "ebu3213" => "22",
             };
-            #[rustfmt::skip]
-            return (svt_range.get(range.as_str()).unwrap().to_string(),svt_matrix.get(matrix.as_str()).unwrap().to_string(),svt_transfer.get(transfer.as_str()).unwrap().to_string(),svt_primaries.get(primaries.as_str()).unwrap().to_string());
+            (
+                svt_range.get(&range).unwrap().to_string(),
+                svt_matrix.get(&matrix).unwrap().to_string(),
+                svt_transfer.get(&transfer).unwrap().to_string(),
+                svt_primaries.get(&primaries).unwrap().to_string(),
+            )
         }
     }
 }
 
 fn get_binary(path: &str) -> PathBuf {
-    return which(path).expect(format!("Couldn't find {path} in PATH").as_str());
+    which(path).unwrap_or_else(|_| panic!("Couldn't find {path} in PATH"))
 }
 
 fn main() {
@@ -261,10 +276,10 @@ fn main() {
 }
 
 #[rustfmt::skip]
-fn ffprobe(file: &PathBuf) -> FileProbe {
+fn ffprobe(file: &Path) -> FileProbe {
     let mut ffprobe: Vec<u8> = Vec::new();
-    let ffprobe_save = PathBuf::from(format!("{}.ffprobe", file.as_path().display()));
-    if ffprobe_save.try_exists().is_ok_and(|b| b == true) {
+    let ffprobe_save = PathBuf::from(format!("{}.ffprobe", file.display()));
+    if ffprobe_save.try_exists().is_ok_and(|b| b) {
         println!("Reading cached ffprobe result at {}", ffprobe_save.display());
         File::open(ffprobe_save).unwrap().read_to_end(&mut ffprobe).unwrap();
     } else {
@@ -281,8 +296,8 @@ fn ffprobe(file: &PathBuf) -> FileProbe {
 fn match_episode(file_name: &OsString, episode_number: String, season: String) -> bool {
     let temp_str = file_name.to_str().unwrap();
     let patterns = [
-        Regex::new(format!("(?i)S{}E{}", season, episode_number).as_str()).unwrap(),
-        Regex::new(format!("(?i)(?<!\\d)\\b{}\\b(?!\\d)", episode_number).as_str()).unwrap(),
+        Regex::new(&format!("(?i)S{season}E{episode_number}")).unwrap(),
+        Regex::new(&format!("(?i)(?<!\\d)\\b{episode_number}\\b(?!\\d)")).unwrap(),
     ];
     let mut regex_matched = false;
     for pattern in patterns {
@@ -293,10 +308,10 @@ fn match_episode(file_name: &OsString, episode_number: String, season: String) -
         regex_matched = true;
         break;
     }
-    return regex_matched;
+    regex_matched
 }
 
-fn check_audio_encoding(input_directory: &PathBuf) -> String {
+fn check_audio_encoding(input_directory: &Path) -> String {
     let mut opus_string: String = String::new();
     for path in input_directory.read_dir().unwrap() {
         let dir_entry = path.unwrap();
@@ -312,24 +327,24 @@ fn check_audio_encoding(input_directory: &PathBuf) -> String {
         opus_string = stream.tags.encoder_options.clone().unwrap();
         break;
     }
-    return opus_string;
+    opus_string
 }
 
 #[rustfmt::skip]
-fn is_video(file: &PathBuf) -> bool {
+fn is_video(file: &Path) -> bool {
     if !file.is_file() {
         return false;
     }
     let tmp_str = file.extension().unwrap();
-    let video_extensions: Vec<&'static str> = vec!["mkv", "mp4", "webm", "avi", "mov", "ts", "m2t"];
-    return video_extensions.iter().any(|extension| tmp_str == *extension);
+    let video_extensions: Vec<&str> = vec!["mkv", "mp4", "webm", "avi", "mov", "ts", "m2t"];
+    video_extensions.iter().any(|extension| tmp_str == *extension)
 }
 
 #[rustfmt::skip]
 fn is_temporary_file(file: &OsString) -> bool {
     let tmp_str = file.to_str().unwrap();
     let temp_extensions: Vec<&'static str> = vec!["_enc.mkv","_grained.mkv","_lowest.mkv","_low.mkv","_high.mkv","_highest.mkv","_grainy.mkv","_cleaned.mkv","_clip.mkv", ".ffprobe", ".offset", ".ssimu2"];
-    return temp_extensions.iter().any(|extension| tmp_str.ends_with(extension));
+    temp_extensions.iter().any(|extension| tmp_str.ends_with(extension))
 }
 
 #[rustfmt::skip]
@@ -354,16 +369,17 @@ fn extract_episode_number(base: &OsStr, pattern: String, season: Option<String>)
         }
         if pattern == "2" {
             let formatted_episode = format!("S{}E{}", season.as_ref().unwrap(), regex_match.unwrap());
-            return Ok(formatted_episode);
+            Ok(formatted_episode)
         } else {
-            return Ok(regex_match.unwrap());
+            Ok(regex_match.unwrap())
         }
     } else {
-        return Ok(pattern.clone());
+        Ok(pattern.clone())
     }
 }
 
-fn enc_opus(source: &PathBuf, stream: &mut Probe, bitrate: &str) {
+fn enc_opus(source: &Path, stream: &mut Probe, bitrate: &str) {
+    let source = source.to_path_buf();
     let s = &stream.stream;
     let index = s.index;
     let lang = stream.language().to_639_3();
@@ -371,9 +387,9 @@ fn enc_opus(source: &PathBuf, stream: &mut Probe, bitrate: &str) {
     audio_path.set_extension(format!("{index}.{lang}.opus"));
     stream.file = audio_path.clone();
     if s.start_pts != 0 {
-        stream.offset += s.start_pts.clone() as i32;
+        stream.offset += s.start_pts as i32;
     }
-    if audio_path.try_exists().is_ok_and(|r| r == false) {
+    if audio_path.try_exists().is_ok_and(|r| !r) {
         #[rustfmt::skip]
         let mut flac_pipe = Command::new(get_binary("ffmpeg"))
             .args(["-i",source.to_str().unwrap(),"-map",format!("0:{index}").as_str(),"-v","16","-hide_banner","-f","flac","-"])
@@ -402,9 +418,9 @@ fn enc_opus(source: &PathBuf, stream: &mut Probe, bitrate: &str) {
 }
 
 #[rustfmt::skip]
-fn get_medium_streams(ffprobe_input: &FileProbe, file_path: &PathBuf, medium: &str, offset: Option<i32>) -> Vec<Probe> {
-    let result = ffprobe_input.streams.iter().filter(|s| s.codec_type == medium).map(|s| Probe {stream: s.clone(),file: file_path.clone(),offset: offset.unwrap_or(0),index: None});
-    return Vec::from_iter(result);
+fn get_medium_streams(ffprobe_input: &FileProbe, file_path: &Path, medium: &str, offset: Option<i32>) -> Vec<Probe> {
+    let result = ffprobe_input.streams.iter().filter(|s| s.codec_type == medium).map(|s| Probe {stream: s.clone(),file: file_path.to_path_buf(),offset: offset.unwrap_or(0),index: None});
+    Vec::from_iter(result)
 }
 
 #[rustfmt::skip]
@@ -429,20 +445,19 @@ fn compare_streams(probe1: Probe, probe2: Probe) -> Probe {
         if bps1 != bps2 {
             return if bps1 > bps2 { probe1 } else { probe2 };
         }
-        return probe1;
+        probe1
     } else {
         let codec_priority: Vec<&'static str> = vec!["ass", "subrip", "hdmv_pgs_subtitle"];
         let codec1_piority = codec_priority.iter().position(|c| *c == stream1.codec_name).unwrap_or(2);
         let codec2_piority = codec_priority.iter().position(|c| *c == stream2.codec_name).unwrap_or(2);
-        return if codec1_piority < codec2_piority { probe2 } else { probe1 };
+        if codec1_piority < codec2_piority { probe2 } else { probe1 }
     }
 }
 
-fn get_title(lang: &Language, title: &String) -> String {
-    let final_title;
+fn get_title(lang: &Language, title: &str) -> String {
     let re = Regex::new(r"(?i)(\(([a-z]| |_)+\)|Forced|Dub|Simplified|Traditional)").unwrap();
     let mut tag: String = "".to_string();
-    let re_success = re.find(title.as_str());
+    let re_success = re.find(title);
     if re_success.is_ok() && re_success.clone().unwrap().is_some() {
         tag = re_success.unwrap().unwrap().as_str().to_string();
         if tag.chars().next().is_some_and(|t| t != '(') {
@@ -451,8 +466,7 @@ fn get_title(lang: &Language, title: &String) -> String {
         }
         tag.insert(0, ' ');
     }
-    final_title = format!("{}{tag}", lang.to_name());
-    return final_title;
+    format!("{}{tag}", lang.to_name())
 }
 
 fn filter_redundant_tracks(streams: &mut Vec<Probe>) -> Vec<Probe> {
@@ -468,7 +482,7 @@ fn filter_redundant_tracks(streams: &mut Vec<Probe>) -> Vec<Probe> {
             title: new_title,
             forced: s.disposition.forced == 1,
         };
-        if unique_tracks.keys().find(|e| **e == key).is_none() {
+        if !unique_tracks.keys().any(|e| *e == key) {
             unique_tracks.insert(key, stream.clone());
         } else {
             let stream2 = unique_tracks.get(&key).unwrap();
@@ -477,29 +491,29 @@ fn filter_redundant_tracks(streams: &mut Vec<Probe>) -> Vec<Probe> {
             unique_tracks.insert(key, winner);
         }
     }
-    return Vec::from_iter(unique_tracks.values().cloned());
+    Vec::from_iter(unique_tracks.values().cloned())
 }
 
 #[rustfmt::skip]
-fn get_offset(file_path: &PathBuf, src2_path: &PathBuf) -> i32 {
+fn get_offset(file_path: &Path, src2_path: &Path) -> i32 {
     println!("Determining offsets for {}", src2_path.display());
     let ref_clip = file_path.parent().unwrap().join(format!("{}_clip.mkv",file_path.file_stem().unwrap().to_str().unwrap()));
     let src_clip = src2_path.parent().unwrap().join(format!("{}_clip.mkv",src2_path.file_stem().unwrap().to_str().unwrap()));
     let offset_save = PathBuf::from(format!("{}.offset", src2_path.display()));
     let offset: f32;
-    if offset_save.try_exists().is_ok_and(|b| b == true) {
+    if offset_save.try_exists().is_ok_and(|b| b) {
         let mut temp: String = String::new();
         File::open(offset_save).unwrap().read_to_string(&mut temp).unwrap();
         offset = temp.parse().unwrap();
     } else {
         let start = "0".to_string();
         let duration = "60".to_string();
-        if ref_clip.try_exists().is_ok_and(|v| v==false) {
+        if ref_clip.try_exists().is_ok_and(|v| !v) {
             Command::new(get_binary("ffmpeg"))
                 .args(["-hide_banner", "-loglevel", "error", "-ss", start.as_str(), "-i", file_path.to_str().unwrap(), "-t", duration.as_str(), "-c:V", "libx264", "-q", "0", ref_clip.to_str().unwrap()])
                 .output().unwrap();
         }
-        if src_clip.try_exists().is_ok_and(|v| v==false) {
+        if src_clip.try_exists().is_ok_and(|v| !v) {
             Command::new(get_binary("ffmpeg"))
                 .args(["-hide_banner", "-loglevel", "error", "-ss", start.as_str(), "-i", src2_path.to_str().unwrap(), "-t", duration.as_str(), "-c:V", "libx264", "-q", "0", src_clip.to_str().unwrap()])
                 .output().unwrap();
@@ -516,19 +530,19 @@ fn get_offset(file_path: &PathBuf, src2_path: &PathBuf) -> i32 {
         offset = result.get(1).unwrap().as_str().parse::<f32>().unwrap() - result.get(2).unwrap().as_str().parse::<f32>().unwrap();
         File::create(offset_save).unwrap().write_fmt(format_args!("{offset}")).unwrap();
     }
-    return (offset * 1000.0) as i32
+    (offset * 1000.0) as i32
 }
 
 #[rustfmt::skip]
 fn get_info(file_path: &PathBuf, src2_paths: &Option<PathBuf>, args: &Args) -> (Vec<Probe>,Vec<Probe>,Vec<Probe>) {
     println!("Collecting video information for {}", file_path.display());
     let file_base = file_path.file_stem().unwrap();
-    let episode = extract_episode_number(&file_base, args.episode_pattern.clone(), Some(args.season.clone())).unwrap_or("".into());
+    let episode = extract_episode_number(file_base, args.episode_pattern.clone(), Some(args.season.clone())).unwrap_or("".into());
     let ffprobe_input = ffprobe(file_path);
-    let mut video_streams = get_medium_streams(&ffprobe_input, &file_path, "video", None);
+    let mut video_streams = get_medium_streams(&ffprobe_input, file_path, "video", None);
     let mut audio_streams = Vec::new();
     if args.audio == "1" || args.audio == "both" {
-        audio_streams = get_medium_streams(&ffprobe_input, &file_path, "audio", None);
+        audio_streams = get_medium_streams(&ffprobe_input, file_path, "audio", None);
         for mut stream in &mut audio_streams {
             if args.original_audio {
                 break;
@@ -553,7 +567,7 @@ fn get_info(file_path: &PathBuf, src2_paths: &Option<PathBuf>, args: &Args) -> (
     }
     let mut subtitle_streams = Vec::new();
     if args.subs == "1" || args.subs == "both" {
-        subtitle_streams = get_medium_streams(&ffprobe_input, &file_path, "subtitle", None);
+        subtitle_streams = get_medium_streams(&ffprobe_input, file_path, "subtitle", None);
     }
     if args.audio == "2" || args.audio == "both" || args.subs == "2" || args.subs == "both" {
         for path in src2_paths.clone().unwrap().read_dir().unwrap() {
@@ -563,18 +577,18 @@ fn get_info(file_path: &PathBuf, src2_paths: &Option<PathBuf>, args: &Args) -> (
                 continue;
             }
             let base = path.file_stem().unwrap();
-            let episode_src2 = extract_episode_number(&base, args.episode_pattern.clone(), Some(args.season.clone())).unwrap_or("".into());
-            if (episode != "" && episode != episode_src2) || file_base != base {
+            let episode_src2 = extract_episode_number(base, args.episode_pattern.clone(), Some(args.season.clone())).unwrap_or("".into());
+            if (!episode.is_empty() && episode != episode_src2) || file_base != base {
                 continue;
             }
             let ffprobe_input = ffprobe(&dir_entry.path());
             let mut v_streams = get_medium_streams(&ffprobe_input, &dir_entry.path(), "video", None);
-            let video_stream = v_streams.get(0);
+            let video_stream = v_streams.first();
             let offset;
             if args.sync != 0 {
                 offset = args.sync;
             } else if video_stream.is_some() {
-                offset = get_offset(&file_path, &dir_entry.path());
+                offset = get_offset(file_path, &dir_entry.path());
             } else {
                 offset = 0;
             }
@@ -627,7 +641,7 @@ fn get_info(file_path: &PathBuf, src2_paths: &Option<PathBuf>, args: &Args) -> (
     let mut file_to_source_map: HashMap<PathBuf, u8> = HashMap::new();
     let mut source_index: u8 = 0;
     for (idx, entry) in audio_streams.iter().enumerate() {
-        if !file_to_source_map.contains_key(&entry.file.to_path_buf()) {
+        if let Entry::Vacant(_) = file_to_source_map.entry(entry.file.to_path_buf()) {
             file_to_source_map.insert(entry.file.to_path_buf(), source_index);
             source_index += 1;
         }
@@ -639,7 +653,7 @@ fn get_info(file_path: &PathBuf, src2_paths: &Option<PathBuf>, args: &Args) -> (
     let next_index: u8 = source_index;
     source_index = 0;
     for (idx, entry) in subtitle_streams.iter().enumerate() {
-        if !file_to_source_map.contains_key(&entry.file.to_path_buf()) {
+        if let Entry::Vacant(_) = file_to_source_map.entry(entry.file.to_path_buf()) {
             file_to_source_map.insert(entry.file.to_path_buf(), source_index);
             source_index += 1;
         }
@@ -659,15 +673,27 @@ fn get_encoder_version(encoder: &str) -> Result<String, String> {
             .arg("-V")
             .output()
             .map_err(|_| "Failed to get encoder version!");
-        #[rustfmt::skip]
-        return Ok(format!("rav1e v{}", String::from_utf8(output.unwrap().stdout).unwrap().split(" ").nth(1).unwrap().to_string()));
+        Ok(format!(
+            "rav1e v{}",
+            String::from_utf8(output.unwrap().stdout)
+                .unwrap()
+                .split(' ')
+                .nth(1)
+                .unwrap()
+        ))
     } else if encoder == "svt-av1" {
         let output = Command::new(get_binary("SvtAv1EncApp"))
             .arg("--version")
             .output()
             .map_err(|_| "Failed to get encoder version!");
-        #[rustfmt::skip]
-        return Ok(format!("svt-av1-psy {}", String::from_utf8(output.unwrap().stdout).unwrap().split(' ').nth(1).unwrap().to_string()));
+        Ok(format!(
+            "svt-av1-psy {}",
+            String::from_utf8(output.unwrap().stdout)
+                .unwrap()
+                .split(' ')
+                .nth(1)
+                .unwrap()
+        ))
     } else if encoder == "opusenc" {
         let output = Command::new(get_binary("opusenc"))
             .arg("--version")
@@ -675,15 +701,15 @@ fn get_encoder_version(encoder: &str) -> Result<String, String> {
             .map_err(|_| "Failed to get encoder version!");
         let mut result = String::from_utf8(output.unwrap().stdout).unwrap();
         result = result.split("libopus").nth(1).unwrap().to_string();
-        result = result.split(")").nth(0).unwrap().to_string();
-        return Ok(result);
+        result = result.split(")").next().unwrap().to_string();
+        Ok(result)
     } else {
-        return Err("Encoder not supported!".to_string());
+        Err("Encoder not supported!".to_string())
     }
 }
 
 #[rustfmt::skip]
-fn get_encoder_params(args: &Args, vinfo: &Vec<Probe>, speed: Option<u8>, quantizer: Option<f32>, encoder: Option<&str>, display: bool) -> String {
+fn get_encoder_params(args: &Args, vinfo: &[Probe], speed: Option<u8>, quantizer: Option<f32>, encoder: Option<&str>, display: bool) -> String {
     let speed = speed.unwrap_or(args.speed);
     let q = quantizer.unwrap_or(args.quantizer);
     let encoder = encoder.unwrap_or(&args.encoder);
@@ -694,7 +720,7 @@ fn get_encoder_params(args: &Args, vinfo: &Vec<Probe>, speed: Option<u8>, quanti
     } else {
         q.to_string()
     };
-    let params = format!(" {}", args.parameters.as_deref().unwrap_or(" ".into()));
+    let params = format!(" {}", args.parameters.as_deref().unwrap_or(" "));
     let (cr, matrix, transfer, primaries) = vinfo[0].color_data(args.encoder == "rav1e");
     let result = if encoder == "svt-av1" {
         format!("--crf {quantizer}{params} --preset {speed} --tune 3 --sharpness 2 --variance-boost-strength 4 --variance-octile 4 --frame-luma-bias 100 --keyint 0 --enable-dlf 2 --enable-cdef 0 --enable-restoration 0 --enable-tf 0 --color-range {cr} --matrix-coefficients {matrix} --transfer-characteristics {transfer} --color-primaries {primaries}")
@@ -702,26 +728,26 @@ fn get_encoder_params(args: &Args, vinfo: &Vec<Probe>, speed: Option<u8>, quanti
         let tiles = args.tiles;
         format!("--quantizer {quantizer}{params} -s {speed} --tiles {tiles} --keyint 0 --no-scene-detection --range {cr} --matrix {matrix} --transfer {transfer} --primaries {primaries}")
     } else if encoder == "x264" {
-        format!("-q 0")
+        "-q 0".to_string()
     } else {
         String::new()
     };
     if result.is_empty() {
         panic!("Unsupported encoder!");
     }
-    return result;
+    result
 }
 
 fn get_grain_string(args: &Args) -> String {
     if args.diff_grain {
-        return if args.lehmer_merge {
+        if args.lehmer_merge {
             "diff + lehmer merge with vs-denoise: \"lowpass = lambda i: box_blur(i, passes=2)\""
                 .to_string()
         } else {
             "diff".to_string()
-        };
+        }
     } else {
-        return format!("--iso {}", args.photon_noise);
+        format!("--iso {}", args.photon_noise)
     }
 }
 
@@ -733,13 +759,13 @@ fn get_denoise_string(args: &Args) -> String {
     if args.ref_calc {
         denoise_string.push_str(", ref=MVToolsPresets.FAST");
     }
-    return denoise_string;
+    denoise_string
 }
 
 fn get_filter_string(args: &Args) -> String {
     let mut filter_string = String::new();
     if !args.no_denoise {
-        filter_string = format!("Denoise with vs-denoise: \"{}\"", get_denoise_string(&args));
+        filter_string = format!("Denoise with vs-denoise: \"{}\"", get_denoise_string(args));
     }
     if args.dehalo {
         if !filter_string.is_empty() {
@@ -757,7 +783,7 @@ fn get_filter_string(args: &Args) -> String {
         filter_string.push_str(", grain=0\" + retinex mask: \"rg_mode=0");
     }
     filter_string.push_str("\", dither with vs-tools");
-    return filter_string;
+    filter_string
 }
 
 fn get_rescale_string(args: &Args) -> String {
@@ -771,11 +797,15 @@ fn get_rescale_string(args: &Args) -> String {
                 args.width.unwrap()
             );
         } else {
-            rescale_string = format!("{rescale_string}\"height={}, width={}", args.height.unwrap(), args.width.unwrap());
+            rescale_string = format!(
+                "{rescale_string}\"height={}, width={}",
+                args.height.unwrap(),
+                args.width.unwrap()
+            );
         }
         rescale_string = format!("{rescale_string}, kernel={}, border_handling={}\", upscaling with vs-scale: \"ArtCNN C16F64\", downscale with vs-kernels: \"Hermite(linear=True)\"", args.algo.as_ref().unwrap(), args.borders);
     }
-    return rescale_string;
+    rescale_string
 }
 
 #[rustfmt::skip]
@@ -793,35 +823,41 @@ fn get_source_string(file: &PathBuf, args: &Args, format: Option<String>) -> Str
         if !root.ends_with('/') {
             root.push('/');
         }
-        format!("bs.VideoSource(r'{}', cachepath=r'{}')", abs(&file).unwrap().display(), root)
+        format!("bs.VideoSource(r'{}', cachepath=r'{}')", abs(file).unwrap().display(), root)
     } else {
         format!("dgdecodenv.DGSource(r'{}')", file.display())
     }
 }
 
 #[rustfmt::skip]
-fn sd_script(vpy_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
+fn sd_script(vpy_path: &PathBuf, args: &Args, vinfo: &[Probe]) {
     let mut file = File::create(vpy_path).unwrap();
-    let source_string = get_source_string(&vinfo[0].file, &args, Some(vinfo[0].pix_fmt(true)));
+    let source_string = get_source_string(&vinfo[0].file, args, Some(vinfo[0].pix_fmt(true)));
     let contents = format!("import vapoursynth as vs\ncore = vs.core\nsrc = core.{source_string}\n# clip1 = src[1004:10893]\n# clip2 = src[11194:44161]\n# src = clip1+clip2\n# src = core.vivtc.VFM(src, 1, mode=3) # 60i to 30p\n# src = core.vivtc.VDecimate(src, 5) # 30p to 24p\nsrc.set_output(0)");
     file.write_all(contents.as_bytes()).unwrap();
 }
 
 fn get_descale_dimensions(height: &Option<u16>, width: &Option<u16>) -> (u16, u16) {
     if height.is_some() && width.is_none() {
-        (height.unwrap(), (height.unwrap() as f64 * 16f64/9f64) as u16)
+        (
+            height.unwrap(),
+            (height.unwrap() as f64 * 16f64 / 9f64) as u16,
+        )
     } else if width.is_some() && height.is_none() {
-        ((width.unwrap() as f64 * 9f64/16f64) as u16, width.unwrap())
+        (
+            (width.unwrap() as f64 * 9f64 / 16f64) as u16,
+            width.unwrap(),
+        )
     } else {
         (height.unwrap(), width.unwrap())
     }
 }
 
 #[rustfmt::skip]
-fn create_vpy_script(vpy_path: &PathBuf, file_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
+fn create_vpy_script(vpy_path: &PathBuf, file_path: &Path, args: &Args, vinfo: &[Probe]) {
     let mut file = File::create(vpy_path).unwrap();
-    let source_string = get_source_string(&vinfo[0].file, &args, Some(vinfo[0].pix_fmt(true)));
-    let mut imports = format!("import vapoursynth as vs\nfrom vstools import initialize_clip, depth\nfrom vsdeband import F3kdb, masked_deband\n");
+    let source_string = get_source_string(&vinfo[0].file, args, Some(vinfo[0].pix_fmt(true)));
+    let mut imports = "import vapoursynth as vs\nfrom vstools import initialize_clip, depth\nfrom vsdeband import F3kdb, masked_deband\n".to_string();
     let mut contents = format!("core = vs.core\ncore.max_cache_size = {}\nsrc = core.{source_string}\n# clip1 = src[1004:10893]\n# clip2 = src[11194:44161]\n# src = clip1+clip2\n# src = core.vivtc.VFM(src, 1, mode=3) # 60i to 30p\n# src = core.vivtc.VDecimate(src, 5) # 30p to 24p\nsrc = initialize_clip(src)\n", args.mem as u32 * 1024);
     if args.rescale {
         imports = format!("{imports}import lvsfunc as lvs\nimport vskernels as vsk\nfrom vodesfunc import RescaleBuilder\nfrom vsscale import ArtCNN\n");
@@ -829,7 +865,7 @@ fn create_vpy_script(vpy_path: &PathBuf, file_path: &PathBuf, args: &Args, vinfo
         let mut rescale_string = if args._match {
             let target_string = format!("target_height={descale_height}, target_width={descale_width},");
             contents = format!("{contents}native_res = lvs.get_match_centers_scaling(src, {target_string}) # Disable for integer scaling and set height in DescaleTarget\n");
-            format!("**native_res")
+            "**native_res".to_string()
         } else {
             format!("height={descale_height}, width={descale_width}")
         };
@@ -860,17 +896,17 @@ fn create_vpy_script(vpy_path: &PathBuf, file_path: &PathBuf, args: &Args, vinfo
 }
 
 #[rustfmt::skip]
-fn multi_script(vpy_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
+fn multi_script(vpy_path: &PathBuf, args: &Args, vinfo: &[Probe]) {
     let mut vpy_file = File::create(vpy_path).unwrap();
-    let source_string = get_source_string(&vinfo[0].file, &args, Some(vinfo[0].pix_fmt(true)));
+    let source_string = get_source_string(&vinfo[0].file, args, Some(vinfo[0].pix_fmt(true)));
     let content = format!("import vapoursynth as vs\ncore = vs.core\nsrc = core.{source_string}\n# clip1 = src[1004:10893]\n# clip2 = src[11194:44161]\n# src = clip1+clip2\n# src = core.vivtc.VFM(src, 1, mode=3) # 60i to 30p\n# src = core.vivtc.VDecimate(src, 5) # 30p to 24p\nsrc = src[::{}]\nsrc.set_output(0)\n", args.cycle);
     vpy_file.write_all(content.as_bytes()).unwrap();
 }
 
 #[rustfmt::skip]
-fn denoise_script(vpy_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
+fn denoise_script(vpy_path: &PathBuf, args: &Args, vinfo: &[Probe]) {
     let mut vpy_file = File::create(vpy_path).unwrap();
-    let source_string = get_source_string(&vinfo[0].file, &args, None);
+    let source_string = get_source_string(&vinfo[0].file, args, None);
     let mut denoise_string = format!("strength={}, tr=2, sr=[3,2,2], planes=[0,1,2]", args.denoise);
     if args.ref_calc {
         denoise_string = format!("{denoise_string}, ref=MVTools.denoise(src, **MVToolsPresets.FAST)");
@@ -880,15 +916,15 @@ fn denoise_script(vpy_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
 }
 
 #[rustfmt::skip]
-fn merge_script(vpy_path: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
+fn merge_script(vpy_path: &PathBuf, args: &Args, vinfo: &[Probe]) {
     let mut vpy_file = File::create(vpy_path).unwrap();
-    let (source1_string, source2_string) = (get_source_string(&vinfo[0].file, &args, None), get_source_string(&vinfo[1].file, &args, None));
+    let (source1_string, source2_string) = (get_source_string(&vinfo[0].file, &args, None), get_source_string(&vinfo[1].file, args, None));
     let content = format!("import vapoursynth as vs\nfrom vstools import initialize_clip, depth\nfrom vsdenoise import frequency_merge\nfrom vsrgtools import box_blur\ncore = vs.core\nsrc1 = core.{source1_string}\nsrc1 = initialize_clip(src1)\nsrc2 = core.{source2_string}\nsrc2 = initialize_clip(src2)\n# clip1 = src1[1004:10893]\n# clip2 = src1[11194:44161]\n# src1 = clip1+clip2\n# src1 = core.vivtc.VFM(src1, 1, mode=3) # 60i to 30p\n# src1 = core.vivtc.VDecimate(src1, 5) # 30p to 24p\noffset = {} # from get_info\nframerate = src1.fps\n# Calculate the frame offset\noffset_frames = int(offset * framerate / -1000)\n# Conditional slicing based on the offset value\nif offset_frames >= 0:\nsrc2 = src2[offset_frames:]\nelse:\nsrc1 = src1[abs(offset_frames):]\nsrcs = [src1, src2]\nlehmer = frequency_merge(srcs, lowpass = lambda i: box_blur(i, passes=3))\ndown = depth(lehmer, 10)\ndown.set_output(0)\n", vinfo[1].offset);
     vpy_file.write_all(content.as_bytes()).unwrap();
 }
 
 #[rustfmt::skip]
-fn scene_detection(vpy_path: &PathBuf, encode: &PathBuf, scenes: &PathBuf, temp: &PathBuf, args: &Args, vinfo: &Vec<Probe>) {
+fn scene_detection(vpy_path: &Path, encode: &Path, scenes: &Path, temp: &Path, args: &Args, vinfo: &[Probe]) {
     let (cr, matrix, transfer, primaries) = vinfo[0].color_data(false);
     let (quantizer, speed) = (args.quantizer, args.speed);
     Command::new(get_binary("av1an")).args([
@@ -902,15 +938,12 @@ fn scene_detection(vpy_path: &PathBuf, encode: &PathBuf, scenes: &PathBuf, temp:
 }
 
 fn quantizer_range(range: Option<String>, encoder: String) -> [f32; 2] {
-    if range.is_none() {
-        if encoder == "rav1e" {
-            [40.0, 160.0]
-        } else {
-            [25.0, 55.0]
-        }
+    if let Some(range) = range {
+        serde_json::from_str::<[f32; 2]>(&range).expect("Failed to parse quantizer range!")
+    } else if encoder == "rav1e" {
+        [40.0, 160.0]
     } else {
-        serde_json::from_str::<[f32; 2]>(range.unwrap().as_str())
-            .expect("Failed to parse quantizer range!")
+        [25.0, 55.0]
     }
 }
 
@@ -928,13 +961,13 @@ fn temp_path(file_path: &PathBuf, ext: &str) -> PathBuf {
 }
 
 #[rustfmt::skip]
-fn encode_file(scene_detect: &PathBuf, script: &PathBuf, encode: &PathBuf, temp: &PathBuf, scenes: &PathBuf, speed: Option<u8>, quantizer: Option<f32>, encoder: Option<&str>, keep: bool, args: &Args, vinfo: &Vec<Probe>) {
+fn encode_file(scene_detect: &Path, script: &Path, encode: &Path, temp: &Path, scenes: &Path, speed: Option<u8>, quantizer: Option<f32>, encoder: Option<&str>, keep: bool, args: &Args, vinfo: &[Probe]) {
     let input = if args.no_filter {
         scene_detect
     } else {
         script
     };
-    let params = get_encoder_params(&args, &vinfo, speed, quantizer, encoder, false);
+    let params = get_encoder_params(args, vinfo, speed, quantizer, encoder, false);
     let (input, encode, temp, workers, scenes, pf) = (input.to_str().unwrap(), encode.to_str().unwrap(), temp.to_str().unwrap(), args.workers.to_string(), scenes.to_str().unwrap(), vinfo[0].pix_fmt(false));
     let mut args = vec![
         "-i", input,
@@ -948,19 +981,29 @@ fn encode_file(scene_detect: &PathBuf, script: &PathBuf, encode: &PathBuf, temp:
         args.push("--keep");
     }
     Command::new(get_binary("av1an")).args(args).spawn().unwrap().wait().unwrap();
-    if PathBuf::from(encode).try_exists().is_ok_and(|b| b == false) {
+    if PathBuf::from(encode).try_exists().is_ok_and(|b| !b) {
         panic!("Av1an failed to encode file!");
     }
 }
 
-fn get_ssimulacra2(src: &PathBuf, distorted: &PathBuf, scenes_info: &mut ScenesInfo, quantizer: f32, args: &Args, cr: &String, matrix: &String, transfer: &String, primaries: &String) {
+fn get_ssimulacra2(
+    src: &PathBuf,
+    distorted: &PathBuf,
+    scenes_info: &mut ScenesInfo,
+    quantizer: f32,
+    args: &Args,
+    cr: &str,
+    matrix: &str,
+    transfer: &str,
+    primaries: &str,
+) {
     let cache = temp_path(distorted, ".ssimu2");
-    let results = if cache.try_exists().is_ok_and(|b| b == false) {
+    let results = if cache.try_exists().is_ok_and(|b| !b) {
         println!("Calculating SSIMULACRA 2 Scores for Q{quantizer}");
         let hi = if args.ssimu2_algo == "vszip" {
             get_vs_ssimu2(src, distorted, args.cycle, &args.source_filter)
         } else {
-            get_ssimu2(src, distorted, args.cycle, cr.clone(), matrix.clone(), transfer.clone(), primaries.clone())
+            get_ssimu2(src, distorted, args.cycle, cr, matrix, transfer, primaries)
         };
         let file = File::create(cache).unwrap();
         serde_json::to_writer(file, &hi).expect("Failed to cache SSIMULCRA2 scores!");
@@ -971,18 +1014,43 @@ fn get_ssimulacra2(src: &PathBuf, distorted: &PathBuf, scenes_info: &mut ScenesI
         file.read_to_string(&mut contents).unwrap();
         serde_json::from_str(contents.as_str()).unwrap()
     };
-    let filtered: BTreeMap<usize, f64> = results.into_iter().filter(|e| e.1 > 0f64).collect();
+    let filtered: BTreeMap<usize, f64> = results
+        .iter()
+        .filter(|e| e.1 > &0f64)
+        .map(|e| (*e.0, *e.1))
+        .collect();
     for scene in scenes_info.scenes.iter_mut() {
         let (start, end) = (scene.start_frame, scene.end_frame);
-        let scene_scores: BTreeMap<usize, f64> = filtered.to_owned().into_iter().filter(|e| start <= e.0 as u32 && e.0 as u32 <= end).collect();
-        if scene_scores.is_empty() { continue; }
+        let scene_scores: BTreeMap<usize, f64> = filtered
+            .iter()
+            .filter(|e| start <= *e.0 as u32 && *e.0 as u32 <= end)
+            .map(|e| (*e.0, *e.1))
+            .collect();
+        if scene_scores.is_empty() {
+            continue;
+        }
         let scores = &mut scene.quantizer_scores;
         if scores.is_none() {
             let _ = scores.insert(HashMap::new());
         }
-        let mut data = statrs::statistics::Data::new(scene_scores.values().copied().collect::<Vec<f64>>());
-        let (mean, median, std_dev, p5, p16, p95) = (data.mean().unwrap(), data.median(), data.std_dev().unwrap(), data.percentile(5), data.percentile(16), data.percentile(95));
-        let score_data = QuantizerScores { mean: (mean), median: (median), std_dev: (std_dev), percentile_5th: p5, percentile_16th: p16, percentile_95th: p95 };
+        let mut data =
+            statrs::statistics::Data::new(scene_scores.values().copied().collect::<Vec<f64>>());
+        let (mean, median, std_dev, p5, p16, p95) = (
+            data.mean().unwrap(),
+            data.median(),
+            data.std_dev().unwrap(),
+            data.percentile(5),
+            data.percentile(16),
+            data.percentile(95),
+        );
+        let score_data = QuantizerScores {
+            mean: (mean),
+            median: (median),
+            std_dev: (std_dev),
+            percentile_5th: p5,
+            percentile_16th: p16,
+            percentile_95th: p95,
+        };
         let mut new = scores.clone().unwrap();
         new.insert(quantizer as usize, score_data);
         let _ = scores.insert(new);
@@ -994,16 +1062,16 @@ fn zone_overrides(
     scenes_path: &PathBuf,
     scenes_over: &PathBuf,
     args: &Args,
-    cr: &String,
-    matrix: &String,
-    transfer: &String,
-    primaries: &String,
+    cr: &str,
+    matrix: &str,
+    transfer: &str,
+    primaries: &str,
 ) {
     let mut quantizers: Vec<f64> = Vec::new();
     let mut minus_sigma_values: Vec<f64> = Vec::new();
     for scene in &mut scenes_info.scenes {
         for (quantizer, data) in scene.quantizer_scores.as_ref().unwrap() {
-            quantizers.push(quantizer.clone() as f64);
+            quantizers.push(*quantizer as f64);
             minus_sigma_values.push(data.percentile_16th);
         }
         let minus_sigma_corr = polyfit(&minus_sigma_values, &quantizers, 3).unwrap();
@@ -1037,18 +1105,35 @@ fn zone_overrides(
             }
             if args.encoder == "rav1e" {
                 let params: Vec<String> = vec_into![
-                    "--quantizer", q,
-                    "-s", speed,
-                    "--tiles", tiles,
-                    "--keyint", "0",
+                    "--quantizer",
+                    q,
+                    "-s",
+                    speed,
+                    "--tiles",
+                    tiles,
+                    "--keyint",
+                    "0",
                     "--no-scene-detection",
-                    "--range", cr,
-                    "--matrix", matrix,
-                    "--transfers", transfer,
-                    "--primaries", primaries
+                    "--range",
+                    cr,
+                    "--matrix",
+                    matrix,
+                    "--transfers",
+                    transfer,
+                    "--primaries",
+                    primaries
                 ];
                 let parameters = if args.parameters.is_some() {
-                    [params, args.parameters.as_ref().unwrap().split(" ").map(String::from).collect()].concat()
+                    [
+                        params,
+                        args.parameters
+                            .as_ref()
+                            .unwrap()
+                            .split(" ")
+                            .map(String::from)
+                            .collect(),
+                    ]
+                    .concat()
                 } else {
                     params
                 };
@@ -1063,25 +1148,50 @@ fn zone_overrides(
                 break;
             } else {
                 let params: Vec<String> = vec_into![
-                    "--crf", q,
-                    "--preset", speed,
-                    "--tune", "3",
-                    "--sharpness", "2",
-                    "--variance-boost-strength", "4",
-                    "--variance-octile", "4",
-                    "--frame-luma-bias", "100",
-                    "--keyint", "0",
-                    "--enable-dlf", "2",
-                    "--enable-cdef", "0",
-                    "--enable-restoration", "0",
-                    "--enable-tf", "0",
-                    "--color-range", cr,
-                    "--matrix-coefficients", matrix,
-                    "--transfer-characteristics", transfer,
-                    "--color-primaries", primaries
+                    "--crf",
+                    q,
+                    "--preset",
+                    speed,
+                    "--tune",
+                    "3",
+                    "--sharpness",
+                    "2",
+                    "--variance-boost-strength",
+                    "4",
+                    "--variance-octile",
+                    "4",
+                    "--frame-luma-bias",
+                    "100",
+                    "--keyint",
+                    "0",
+                    "--enable-dlf",
+                    "2",
+                    "--enable-cdef",
+                    "0",
+                    "--enable-restoration",
+                    "0",
+                    "--enable-tf",
+                    "0",
+                    "--color-range",
+                    cr,
+                    "--matrix-coefficients",
+                    matrix,
+                    "--transfer-characteristics",
+                    transfer,
+                    "--color-primaries",
+                    primaries
                 ];
                 let parameters = if args.parameters.is_some() {
-                    [params, args.parameters.as_ref().unwrap().split(' ').map(String::from).collect()].concat()
+                    [
+                        params,
+                        args.parameters
+                            .as_ref()
+                            .unwrap()
+                            .split(' ')
+                            .map(String::from)
+                            .collect(),
+                    ]
+                    .concat()
                 } else {
                     params
                 };
@@ -1109,17 +1219,35 @@ fn validate_overrides(scenes_path: &PathBuf, args: &Args) {
     let mut scenes: ScenesInfo = serde_json::from_reader(scenes_o_read).unwrap();
     for scene in &mut scenes.scenes {
         if scene.zone_overrides.is_none() {
-            continue
+            continue;
         }
         let overrides = scene.zone_overrides.as_mut().unwrap();
         if overrides.encoder == "rav1e" {
-            if overrides.video_params.len() == 17 { // number of arguments by default
-                overrides.video_params = [overrides.video_params.clone(), args.parameters.as_ref().unwrap().split(" ").map(String::from).collect()].concat();
+            if overrides.video_params.len() == 17 {
+                // number of arguments by default
+                overrides.video_params = [
+                    overrides.video_params.clone(),
+                    args.parameters
+                        .as_ref()
+                        .unwrap()
+                        .split(" ")
+                        .map(String::from)
+                        .collect(),
+                ]
+                .concat();
             }
-        } else {
-            if overrides.video_params.len() == 32 { // number of arguments by default
-                overrides.video_params = [overrides.video_params.clone(), args.parameters.as_ref().unwrap().split(" ").map(String::from).collect()].concat();
-            }
+        } else if overrides.video_params.len() == 32 {
+            // number of arguments by default
+            overrides.video_params = [
+                overrides.video_params.clone(),
+                args.parameters
+                    .as_ref()
+                    .unwrap()
+                    .split(" ")
+                    .map(String::from)
+                    .collect(),
+            ]
+            .concat();
         }
     }
     let writer = File::create(scenes_path).unwrap();
@@ -1127,7 +1255,7 @@ fn validate_overrides(scenes_path: &PathBuf, args: &Args) {
 }
 
 #[rustfmt::skip]
-fn add_grain_table(encode: &PathBuf, grained: &PathBuf, photon_noise: u16) {
+fn add_grain_table(encode: &Path, grained: &Path, photon_noise: u16) {
     Command::new(get_binary("grav1synth"))
         .args([
             "generate", encode.to_str().unwrap(),
@@ -1135,16 +1263,16 @@ fn add_grain_table(encode: &PathBuf, grained: &PathBuf, photon_noise: u16) {
             "--iso", photon_noise.to_string().as_str(),
         ])
         .spawn().unwrap().wait().unwrap();
-    if grained.try_exists().is_ok_and(|b| b==false) {
+    if grained.try_exists().is_ok_and(|b| !b) {
         panic!("Failed to create grain table!");
     }
 }
 
 fn grain_chunks(
-    grainy_dir: &PathBuf,
-    cleaned_dir: &PathBuf,
-    encode_dir: &PathBuf,
-    grained_dir: &PathBuf,
+    grainy_dir: &Path,
+    cleaned_dir: &Path,
+    encode_dir: &Path,
+    grained_dir: &Path,
     chunk: &String,
 ) {
     let grainy = abs(grainy_dir.join(format!("{chunk}.mkv"))).unwrap();
@@ -1152,50 +1280,69 @@ fn grain_chunks(
     let gtable = abs(grainy_dir.join(format!("{chunk}_table.txt"))).unwrap();
     let encode = abs(encode_dir.join(format!("{chunk}.ivf"))).unwrap();
     let grained = abs(grained_dir.join(format!("{chunk}.ivf"))).unwrap();
-    if gtable.try_exists().is_ok_and(|b| b == false) {
+    if gtable.try_exists().is_ok_and(|b| !b) {
         Command::new(get_binary("grav1synth"))
             .args([
-                "diff", grainy.to_str().unwrap(), cleaned.to_str().unwrap(),
-                "-o", gtable.to_str().unwrap(),
-            ]).spawn().unwrap().wait().unwrap();
-        if gtable.try_exists().is_ok_and(|b| b==false) {
+                "diff",
+                grainy.to_str().unwrap(),
+                cleaned.to_str().unwrap(),
+                "-o",
+                gtable.to_str().unwrap(),
+            ])
+            .spawn()
+            .unwrap()
+            .wait()
+            .unwrap();
+        if gtable.try_exists().is_ok_and(|b| !b) {
             panic!("Failed to create grain table!");
         }
     }
-    if grained.try_exists().is_ok_and(|b| b == false) {
+    if grained.try_exists().is_ok_and(|b| !b) {
         Command::new(get_binary("grav1synth"))
             .args([
-                "apply", encode.to_str().unwrap(),
-                "-o", grained.to_str().unwrap(),
-                "-g", gtable.to_str().unwrap(),
-            ]).spawn().unwrap().wait().unwrap();
-        if grained.try_exists().is_ok_and(|b| b==false) {
+                "apply",
+                encode.to_str().unwrap(),
+                "-o",
+                grained.to_str().unwrap(),
+                "-g",
+                gtable.to_str().unwrap(),
+            ])
+            .spawn()
+            .unwrap()
+            .wait()
+            .unwrap();
+        if grained.try_exists().is_ok_and(|b| !b) {
             panic!("Failed to create grained video!");
         }
     }
 }
 
-fn get_diff_grain(
-    grainy_temp: &PathBuf,
-    cleaned_temp: &PathBuf,
-    temp: &PathBuf,
-    grained: &PathBuf,
-) {
+fn get_diff_grain(grainy_temp: &Path, cleaned_temp: &Path, temp: &Path, grained: &Path) {
     let grainy_dir = grainy_temp.join("encode");
     let cleaned_dir = cleaned_temp.join("encode");
     let encode_dir = temp.join("encode");
     let grained_dir = temp.join("grained");
-    if grained_dir.try_exists().is_ok_and(|b| b == false) {
+    if grained_dir.try_exists().is_ok_and(|b| !b) {
         std::fs::create_dir_all(&grained_dir).unwrap();
     }
     // absolutely disgusting
     let matching_files = cleaned_dir.read_dir().unwrap().map(|f| {
-        f.unwrap().path().file_stem().unwrap().to_string_lossy().to_string()
+        f.unwrap()
+            .path()
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
     });
     for chunk in matching_files {
         grain_chunks(&grainy_dir, &cleaned_dir, &encode_dir, &grained_dir, &chunk);
     }
-    let input_files = Vec::from_iter(grained_dir.read_dir().unwrap().map(|f| abs(f.unwrap().path()).unwrap().to_string_lossy().to_string()));
+    let input_files = Vec::from_iter(grained_dir.read_dir().unwrap().map(|f| {
+        abs(f.unwrap().path())
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+    }));
     let mut vec_input: Vec<&str> = input_files.iter().map(|f| &**f).collect();
     let mut args = vec!["mkvmerge", "-q", "-o", grained.to_str().unwrap(), "["];
     args.append(&mut vec_input);
@@ -1203,26 +1350,29 @@ fn get_diff_grain(
     Command::new(get_binary("mkvmerge"))
         .args(args)
         .current_dir(&grained_dir)
-        .spawn().unwrap().wait().unwrap();
-    if grained.try_exists().is_ok_and(|b| b==false) {
+        .spawn()
+        .unwrap()
+        .wait()
+        .unwrap();
+    if grained.try_exists().is_ok_and(|b| !b) {
         panic!("mkvmerge failed to create grained video!");
     }
 }
 
 fn get_tags(tags_file: &PathBuf, encoder_options: Option<String>, args: &Args) {
-    let mut tags = format!("<Tags>\n");
+    let mut tags = "<Tags>\n".to_string();
     if !args.single_pass {
         tags = format!("{tags}  <Tag>\n    <Simple>\n      <Name>Target SSIMULACRA 2</Name>\n      <String>Mean: {}</String>\n    </Simple>\n  </Tag>\n", args.target_quality);
     }
     tags = format!("{tags}  <Tag>\n    <Simple>\n      <Name>Encoder settings</Name>\n      <String>{}: \"{}\"</String>\n    </Simple>\n  </Tag>\n", get_encoder_version(args.encoder.clone().as_str()).unwrap(), encoder_options.unwrap());
     if !args.no_grain {
-        tags = format!("{tags}  <Tag>\n    <Simple>\n      <Name>Film grain synthesis settings</Name>\n      <String>grav1synth: {}</String>\n    </Simple>\n  </Tag>\n", get_grain_string(&args));
+        tags = format!("{tags}  <Tag>\n    <Simple>\n      <Name>Film grain synthesis settings</Name>\n      <String>grav1synth: {}</String>\n    </Simple>\n  </Tag>\n", get_grain_string(args));
     }
     if !args.no_filter {
-        tags = format!("{tags}  <Tag>\n    <Simple>\n      <Name>Vapoursynth filters</Name>\n      <String>{}</String>\n    </Simple>\n  </Tag>\n", get_filter_string(&args));
+        tags = format!("{tags}  <Tag>\n    <Simple>\n      <Name>Vapoursynth filters</Name>\n      <String>{}</String>\n    </Simple>\n  </Tag>\n", get_filter_string(args));
     }
     if args.rescale {
-        tags = format!("{tags}  <Tag>\n    <Simple>\n      <Name>Rescale settings</Name>\n      <String>{}</String>\n    </Simple>\n  </Tag>\n", get_rescale_string(&args));
+        tags = format!("{tags}  <Tag>\n    <Simple>\n      <Name>Rescale settings</Name>\n      <String>{}</String>\n    </Simple>\n  </Tag>\n", get_rescale_string(args));
     }
     tags = format!("{tags}</Tags>");
     let mut file = File::create(tags_file).unwrap();
@@ -1230,25 +1380,45 @@ fn get_tags(tags_file: &PathBuf, encoder_options: Option<String>, args: &Args) {
 }
 
 fn mux_file(
-    video_path: &PathBuf,
-    encode: &PathBuf,
-    output_path: &PathBuf,
-    tags: &PathBuf,
-    vinfo: &Vec<Probe>,
-    ainfo: &Vec<Probe>,
-    sinfo: &Vec<Probe>,
+    video_path: &Path,
+    encode: &Path,
+    output_path: &Path,
+    tags: &Path,
+    vinfo: &[Probe],
+    ainfo: &[Probe],
+    sinfo: &[Probe],
     args: &Args,
 ) {
-    let atracks: Vec<String> = ainfo.iter().map(|p| format!("{}:{}", p.index.unwrap() + 2, p.stream.index)).collect();
-    let stracks: Vec<String> = sinfo.iter().map(|p| format!("{}:{}", p.index.unwrap() + 2, p.stream.index)).collect();
-    let track_order = [vec!["1:0".to_string()], atracks, stracks].concat().join(",");
+    let atracks: Vec<String> = ainfo
+        .iter()
+        .map(|p| format!("{}:{}", p.index.unwrap() + 2, p.stream.index))
+        .collect();
+    let stracks: Vec<String> = sinfo
+        .iter()
+        .map(|p| format!("{}:{}", p.index.unwrap() + 2, p.stream.index))
+        .collect();
+    let track_order = [vec!["1:0".to_string()], atracks, stracks]
+        .concat()
+        .join(",");
     let mut arguments: Vec<String> = vec_into![
-        "--output", output_path.to_str().unwrap(),
-        "-D", "-A", "-S",
+        "--output",
+        output_path.to_str().unwrap(),
+        "-D",
+        "-A",
+        "-S",
         encode.to_str().unwrap(),
-        "--language", "0:und", "--track-name", format!("0:{}", args.raws), "-t", format!("0:{}", tags.display()),
-        "--aspect-ratio", format!("0:{}", vinfo[0].ratio()),
-        "--default-duration", format!("0:{}p", vinfo[0].fps()), "-A", "-S",
+        "--language",
+        "0:und",
+        "--track-name",
+        format!("0:{}", args.raws),
+        "-t",
+        format!("0:{}", tags.display()),
+        "--aspect-ratio",
+        format!("0:{}", vinfo[0].ratio()),
+        "--default-duration",
+        format!("0:{}p", vinfo[0].fps()),
+        "-A",
+        "-S",
         video_path.to_str().unwrap()
     ];
     let title = vinfo[0].stream.tags.title.as_ref();
@@ -1274,7 +1444,18 @@ fn mux_file(
         arguments.append(&mut vec_into!["-a", audio_tracks_str, "-D", "-S"]);
         for track in ainfo {
             if track.file == path {
-                arguments.append(&mut vec_into!["--track-name", format!("{}:{}", track.stream.index, track.stream.tags.title.as_ref().unwrap()), "--language", format!("{}:{}", track.stream.index, track.language().to_639_3()), "-y", format!("{}:{}", track.stream.index, track.offset)]);
+                arguments.append(&mut vec_into![
+                    "--track-name",
+                    format!(
+                        "{}:{}",
+                        track.stream.index,
+                        track.stream.tags.title.as_ref().unwrap()
+                    ),
+                    "--language",
+                    format!("{}:{}", track.stream.index, track.language().to_639_3()),
+                    "-y",
+                    format!("{}:{}", track.stream.index, track.offset)
+                ]);
             }
         }
         arguments.push(path.to_string_lossy().to_string());
@@ -1295,10 +1476,28 @@ fn mux_file(
             }
         }
         let sub_tracks_str = sub_tracks.iter().join(",");
-        arguments.append(&mut vec_into!["-s", sub_tracks_str, "-D", "-A", "--compression", "-1:zlib"]);
+        arguments.append(&mut vec_into![
+            "-s",
+            sub_tracks_str,
+            "-D",
+            "-A",
+            "--compression",
+            "-1:zlib"
+        ]);
         for track in sinfo {
             if track.file == path {
-                arguments.append(&mut vec_into!["--track-name", format!("{}:{}", track.stream.index, track.stream.tags.title.as_ref().unwrap()), "--language", format!("{}:{}", track.stream.index, track.language().to_639_3()), "-y", format!("{}:{}", track.stream.index, track.offset)])
+                arguments.append(&mut vec_into![
+                    "--track-name",
+                    format!(
+                        "{}:{}",
+                        track.stream.index,
+                        track.stream.tags.title.as_ref().unwrap()
+                    ),
+                    "--language",
+                    format!("{}:{}", track.stream.index, track.language().to_639_3()),
+                    "-y",
+                    format!("{}:{}", track.stream.index, track.offset)
+                ])
             }
         }
         arguments.push(path.to_string_lossy().to_string());
@@ -1306,8 +1505,11 @@ fn mux_file(
     arguments.append(&mut vec_into!["--track-order", track_order]);
     Command::new(get_binary("mkvmerge"))
         .args(&arguments)
-        .spawn().unwrap().wait().unwrap();
-    if output_path.try_exists().is_ok_and(|b| b==false) {
+        .spawn()
+        .unwrap()
+        .wait()
+        .unwrap();
+    if output_path.try_exists().is_ok_and(|b| !b) {
         panic!("mkvmerge failed to create output video!");
     }
 }
@@ -1330,7 +1532,11 @@ fn process_command(args: Args) {
         }
         println!("{}", dir_entry.path().display());
         let episode_number_try = if !args.not_show {
-            extract_episode_number(&base, args.episode_pattern.clone(), Some(args.season.clone()))
+            extract_episode_number(
+                base,
+                args.episode_pattern.clone(),
+                Some(args.season.clone()),
+            )
         } else {
             Err("Argument 'not_show' is set!".into())
         };
@@ -1342,14 +1548,20 @@ fn process_command(args: Args) {
         if !args.not_show {
             println!("Episode {episode_number}");
         }
-        let filename_output = if args.inherit_name { 
+        let filename_output = if args.inherit_name {
             base.to_string_lossy().to_string()
         } else if !args.not_show {
-            format!("[{}] {} - {episode_number} [{}]", args.group, args.name, args.suffix)
+            format!(
+                "[{}] {} - {episode_number} [{}]",
+                args.group, args.name, args.suffix
+            )
         } else {
             format!("[{}] {} [{}]", args.group, args.name, args.suffix)
         };
-        let output_path = args.output_directory.clone().join(format!("{filename_output}.mkv"));
+        let output_path = args
+            .output_directory
+            .clone()
+            .join(format!("{filename_output}.mkv"));
         println!("Output path: {}", output_path.display());
         if args.batch {
             torrent_files = Some(args.output_directory.clone());
@@ -1358,11 +1570,14 @@ fn process_command(args: Args) {
                     args.output_directory.clone().file_stem().unwrap().to_str().unwrap())));
         } else {
             torrent_files = Some(output_path.clone());
-            torrent_path = Some(args.input_directory.clone().join(format!("{filename_output}.torrent")));
+            torrent_path = Some(
+                args.input_directory
+                    .clone()
+                    .join(format!("{filename_output}.torrent")),
+            );
         }
-        if !args.no_torrent
-            && torrent_path.clone().unwrap().try_exists().is_ok_and(|b| b == true)
-            || args.no_torrent && output_path.clone().try_exists().is_ok_and(|b| b == true)
+        if !args.no_torrent && torrent_path.clone().unwrap().try_exists().is_ok_and(|b| b)
+            || args.no_torrent && output_path.clone().try_exists().is_ok_and(|b| b)
         {
             if !args.no_torrent {
                 println!("Torrent file exists, skipping!");
@@ -1373,7 +1588,12 @@ fn process_command(args: Args) {
         }
         if (args.audio == "2" || args.audio == "both") || (args.subs == "2" || args.subs == "both")
         {
-            let mut temp_files = args.src2_directory.clone().unwrap().read_dir().unwrap()
+            let mut temp_files = args
+                .src2_directory
+                .clone()
+                .unwrap()
+                .read_dir()
+                .unwrap()
                 .filter(|file| {
                     let hi = file.as_ref().unwrap().file_name();
                     let matches = if !args.not_show {
@@ -1381,14 +1601,18 @@ fn process_command(args: Args) {
                     } else {
                         file.as_ref().unwrap().path().file_stem().unwrap() == base
                     };
-                    is_video(&file.as_ref().unwrap().path())
-                        && !is_temporary_file(&hi)
-                        && matches
-                }).peekable();
+                    is_video(&file.as_ref().unwrap().path()) && !is_temporary_file(&hi) && matches
+                })
+                .peekable();
             if temp_files.peek().is_some() {
                 let mut temp_list: Vec<PathBuf> = vec![];
                 temp_files.for_each(|file| {
-                    temp_list.push(args.src2_directory.clone().unwrap().join(file.unwrap().path()),)
+                    temp_list.push(
+                        args.src2_directory
+                            .clone()
+                            .unwrap()
+                            .join(file.unwrap().path()),
+                    )
                 });
                 src2_paths = Some(temp_list.clone());
             }
@@ -1412,113 +1636,266 @@ fn process_command(args: Args) {
         let grained = temp_path(&file_path, "_grained.mkv");
         let tags = temp_path(&file_path, "_tags.xml");
 
-        if scene_detect.try_exists().is_ok_and(|b| b == false) {
+        if scene_detect.try_exists().is_ok_and(|b| !b) {
             sd_script(&scene_detect, &args, &vinfo);
         }
-        if script.try_exists().is_ok_and(|b| b == false) && !args.no_filter {
+        if script.try_exists().is_ok_and(|b| !b) && !args.no_filter {
             create_vpy_script(&script, &file_path, &args, &vinfo);
         }
-        if skip_frames.try_exists().is_ok_and(|b| b == false) && !args.single_pass {
+        if skip_frames.try_exists().is_ok_and(|b| !b) && !args.single_pass {
             multi_script(&skip_frames, &args, &vinfo);
         }
-        if clean.try_exists().is_ok_and(|b| b == false) && args.diff_grain && args.no_filter {
+        if clean.try_exists().is_ok_and(|b| !b) && args.diff_grain && args.no_filter {
             denoise_script(&clean, &args, &vinfo);
         }
-        if merge.try_exists().is_ok_and(|b| b == false) && args.lehmer_merge {
+        if merge.try_exists().is_ok_and(|b| !b) && args.lehmer_merge {
             merge_script(&merge, &args, &vinfo);
         }
         if args.review {
-            println!("PAUSED: Review and edit your filters for {}. Ready to continue?", file_path.display());
+            println!(
+                "PAUSED: Review and edit your filters for {}. Ready to continue?",
+                file_path.display()
+            );
             print!("(yes/no): ");
             io::stdout().flush().expect("Failed to flush!");
             let mut input: String = String::new();
-            io::stdin().read_line(&mut input).expect("Failed to read input!");
+            io::stdin()
+                .read_line(&mut input)
+                .expect("Failed to read input!");
             if input != "yes\n" {
                 eprintln!("\nAborted. Exiting script.");
                 exit(0);
             }
             println!("Continuing to encode.");
         }
-        if encode.try_exists().is_ok_and(|b| b == false) {
-            let scenes_file;
+        if encode.try_exists().is_ok_and(|b| !b) {
             let temp = file_path.parent().unwrap().join(base);
-            if scenes.try_exists().is_ok_and(|b| b == false) {
+            if scenes.try_exists().is_ok_and(|b| !b) {
                 scene_detection(&scene_detect, &encode, &scenes, &temp, &args, &vinfo);
             }
-            if !args.single_pass {
-                if scenes_over.try_exists().is_ok_and(|b| b == false) {
+            let scenes_file = if !args.single_pass {
+                if scenes_over.try_exists().is_ok_and(|b| !b) {
                     let scenes_info_read = File::open(&scenes).unwrap();
-                    let mut scenes_info: ScenesInfo = serde_json::from_reader(&scenes_info_read).unwrap();
-                    if scenes_skip.try_exists().is_ok_and(|b| b == false) {
+                    let mut scenes_info: ScenesInfo =
+                        serde_json::from_reader(&scenes_info_read).unwrap();
+                    if scenes_skip.try_exists().is_ok_and(|b| !b) {
                         scene_detection(&skip_frames, &encode, &scenes_skip, &temp, &args, &vinfo);
                     }
                     let lowest_quantizer = calculate_quantizer(&args, 2);
                     let lowest = temp_path(&file_path, "_lowest.mkv");
-                    let lowest_temp = file_path.parent().unwrap().join(lowest.file_stem().unwrap());
-                    if lowest.try_exists().is_ok_and(|b| b == false) {
-                        encode_file(&skip_frames, &skip_frames, &lowest, &lowest_temp, &scenes_skip, Some(multi_speed), Some(lowest_quantizer), None, false, &args, &vinfo);
+                    let lowest_temp = file_path
+                        .parent()
+                        .unwrap()
+                        .join(lowest.file_stem().unwrap());
+                    if lowest.try_exists().is_ok_and(|b| !b) {
+                        encode_file(
+                            &skip_frames,
+                            &skip_frames,
+                            &lowest,
+                            &lowest_temp,
+                            &scenes_skip,
+                            Some(multi_speed),
+                            Some(lowest_quantizer),
+                            None,
+                            false,
+                            &args,
+                            &vinfo,
+                        );
                     }
-                    get_ssimulacra2(&skip_frames, &lowest, &mut scenes_info, lowest_quantizer, &args, &cr, &matrix, &transfer, &primaries);
+                    get_ssimulacra2(
+                        &skip_frames,
+                        &lowest,
+                        &mut scenes_info,
+                        lowest_quantizer,
+                        &args,
+                        &cr,
+                        &matrix,
+                        &transfer,
+                        &primaries,
+                    );
 
                     let low_quantizer = calculate_quantizer(&args, 1);
                     let low = temp_path(&file_path, "_low.mkv");
                     let low_temp = file_path.parent().unwrap().join(low.file_stem().unwrap());
-                    if low.try_exists().is_ok_and(|b| b == false) {
-                        encode_file(&skip_frames, &skip_frames, &low, &low_temp, &scenes_skip, Some(multi_speed), Some(low_quantizer), None, false, &args, &vinfo);
+                    if low.try_exists().is_ok_and(|b| b) {
+                        encode_file(
+                            &skip_frames,
+                            &skip_frames,
+                            &low,
+                            &low_temp,
+                            &scenes_skip,
+                            Some(multi_speed),
+                            Some(low_quantizer),
+                            None,
+                            false,
+                            &args,
+                            &vinfo,
+                        );
                     }
-                    get_ssimulacra2(&skip_frames, &low, &mut scenes_info, low_quantizer, &args, &cr, &matrix, &transfer, &primaries);
+                    get_ssimulacra2(
+                        &skip_frames,
+                        &low,
+                        &mut scenes_info,
+                        low_quantizer,
+                        &args,
+                        &cr,
+                        &matrix,
+                        &transfer,
+                        &primaries,
+                    );
 
                     let high_quantizer = calculate_quantizer(&args, -1);
                     let high = temp_path(&file_path, "_high.mkv");
                     let high_temp = file_path.parent().unwrap().join(high.file_stem().unwrap());
                     if high.try_exists().is_ok_and(|b| b == false) {
-                        encode_file(&skip_frames, &skip_frames, &high, &high_temp, &scenes_skip, Some(multi_speed), Some(high_quantizer), None, false, &args, &vinfo);
+                        encode_file(
+                            &skip_frames,
+                            &skip_frames,
+                            &high,
+                            &high_temp,
+                            &scenes_skip,
+                            Some(multi_speed),
+                            Some(high_quantizer),
+                            None,
+                            false,
+                            &args,
+                            &vinfo,
+                        );
                     }
-                    get_ssimulacra2(&skip_frames, &high, &mut scenes_info, high_quantizer, &args, &cr, &matrix, &transfer, &primaries);
+                    get_ssimulacra2(
+                        &skip_frames,
+                        &high,
+                        &mut scenes_info,
+                        high_quantizer,
+                        &args,
+                        &cr,
+                        &matrix,
+                        &transfer,
+                        &primaries,
+                    );
 
                     let highest_quantizer = calculate_quantizer(&args, -2);
                     let highest = temp_path(&file_path, "_highest.mkv");
-                    let highest_temp = file_path.parent().unwrap().join(highest.file_stem().unwrap());
-                    if highest.try_exists().is_ok_and(|b| b == false) {
-                        encode_file(&skip_frames, &skip_frames, &highest, &highest_temp, &scenes_skip, Some(multi_speed), Some(highest_quantizer), None, false, &args, &vinfo);
+                    let highest_temp = file_path
+                        .parent()
+                        .unwrap()
+                        .join(highest.file_stem().unwrap());
+                    if highest.try_exists().is_ok_and(|b| !b) {
+                        encode_file(
+                            &skip_frames,
+                            &skip_frames,
+                            &highest,
+                            &highest_temp,
+                            &scenes_skip,
+                            Some(multi_speed),
+                            Some(highest_quantizer),
+                            None,
+                            false,
+                            &args,
+                            &vinfo,
+                        );
                     }
-                    get_ssimulacra2(&skip_frames, &highest, &mut scenes_info, highest_quantizer, &args, &cr, &matrix, &transfer, &primaries);
+                    get_ssimulacra2(
+                        &skip_frames,
+                        &highest,
+                        &mut scenes_info,
+                        highest_quantizer,
+                        &args,
+                        &cr,
+                        &matrix,
+                        &transfer,
+                        &primaries,
+                    );
 
-                    zone_overrides(&mut scenes_info, &scenes, &scenes_over, &args, &cr, &matrix, &transfer, &primaries);
+                    zone_overrides(
+                        &mut scenes_info,
+                        &scenes,
+                        &scenes_over,
+                        &args,
+                        &cr,
+                        &matrix,
+                        &transfer,
+                        &primaries,
+                    );
                 }
-                scenes_file = scenes_over.clone();
+                scenes_over.clone()
             } else {
-                scenes_file = scenes.clone();
-            }
+                scenes.clone()
+            };
             if args.parameters.is_some() && !args.single_pass {
                 validate_overrides(&scenes_file, &args);
             }
-            encode_file(&scene_detect, &script, &encode, &temp, &scenes_file, Some(args.speed), Some(args.quantizer), None, true, &args, &vinfo);
+            encode_file(
+                &scene_detect,
+                &script,
+                &encode,
+                &temp,
+                &scenes_file,
+                Some(args.speed),
+                Some(args.quantizer),
+                None,
+                true,
+                &args,
+                &vinfo,
+            );
         }
-        if grained.try_exists().is_ok_and(|b| b == false) {
+        if grained.try_exists().is_ok_and(|b| !b) {
             if args.diff_grain {
-                if grainy.try_exists().is_ok_and(|b| b == false) {
+                if grainy.try_exists().is_ok_and(|b| !b) {
                     let script = if args.lehmer_merge {
                         merge
                     } else {
                         scene_detect.clone()
                     };
-                    let temp = file_path.parent().unwrap().join(grainy.file_stem().unwrap());
-                    encode_file(&scene_detect, &script, &grainy, &temp, &scenes, None, None, Some("x264"), true, &args, &vinfo);
+                    let temp = file_path
+                        .parent()
+                        .unwrap()
+                        .join(grainy.file_stem().unwrap());
+                    encode_file(
+                        &scene_detect,
+                        &script,
+                        &grainy,
+                        &temp,
+                        &scenes,
+                        None,
+                        None,
+                        Some("x264"),
+                        true,
+                        &args,
+                        &vinfo,
+                    );
                 }
                 let cleaned_temp = if args.no_filter {
-                    let cleaned_temp = file_path.parent().unwrap().join(cleaned.file_stem().unwrap());
-                    if cleaned.try_exists().is_ok_and(|b| b == false) {
+                    let cleaned_temp = file_path
+                        .parent()
+                        .unwrap()
+                        .join(cleaned.file_stem().unwrap());
+                    if cleaned.try_exists().is_ok_and(|b| !b) {
                         let scenes_file = if args.single_pass {
                             scenes.clone()
                         } else {
                             scenes_over.clone()
                         };
-                        encode_file(&clean, &clean, &cleaned, &cleaned_temp, &scenes_file, Some(multi_speed), None, None, true, &args, &vinfo);
+                        encode_file(
+                            &clean,
+                            &clean,
+                            &cleaned,
+                            &cleaned_temp,
+                            &scenes_file,
+                            Some(multi_speed),
+                            None,
+                            None,
+                            true,
+                            &args,
+                            &vinfo,
+                        );
                     }
                     cleaned_temp
                 } else {
-                    file_path.parent().unwrap().join(file_path.file_stem().unwrap())
+                    file_path
+                        .parent()
+                        .unwrap()
+                        .join(file_path.file_stem().unwrap())
                 };
                 let grainy_temp = temp_path(&grainy, "");
                 get_diff_grain(&grainy_temp, &cleaned_temp, &grainy_temp, &grained);
@@ -1526,49 +1903,82 @@ fn process_command(args: Args) {
                 add_grain_table(&encode, &grained, args.photon_noise);
             }
         }
-        if tags.try_exists().is_ok_and(|b| b == false) {
-            get_tags(&tags, Some(get_encoder_params(&args, &vinfo, None, None, None, true)), &args);
+        if tags.try_exists().is_ok_and(|b| !b) {
+            get_tags(
+                &tags,
+                Some(get_encoder_params(&args, &vinfo, None, None, None, true)),
+                &args,
+            );
         }
         if args.review {
-            println!("PAUSED: Review and edit your tags for {}. Ready to continue?", file_path.display());
+            println!(
+                "PAUSED: Review and edit your tags for {}. Ready to continue?",
+                file_path.display()
+            );
             print!("(yes/no): ");
             io::stdout().flush().expect("Failed to flush!");
             let mut input: String = String::new();
-            io::stdin().read_line(&mut input).expect("Failed to read input!");
+            io::stdin()
+                .read_line(&mut input)
+                .expect("Failed to read input!");
             if input.to_lowercase() != "yes\n" {
                 eprintln!("\nAborted. Exiting script.");
                 exit(0);
             }
             println!("Continuing to mux.");
         }
-        if output_path.try_exists().is_ok_and(|b| b == false) {
+        if output_path.try_exists().is_ok_and(|b| !b) {
             let video_path = if args.no_grain {
                 encode.clone()
             } else {
                 grained.clone()
             };
-            mux_file(&video_path, &encode, &output_path, &tags, &vinfo, &ainfo, &sinfo, &args);
+            mux_file(
+                &video_path,
+                &encode,
+                &output_path,
+                &tags,
+                &vinfo,
+                &ainfo,
+                &sinfo,
+                &args,
+            );
             println!("{filename_output} done!");
         }
-        if !args.batch && !args.no_torrent && torrent_path.clone().unwrap().try_exists().is_ok_and(|b| b == false) {
+        if !args.batch
+            && !args.no_torrent
+            && torrent_path.clone().unwrap().try_exists().is_ok_and(|b| !b)
+        {
             let opus_options: String = if src2_paths.is_some() {
                 check_audio_encoding(&args.src2_directory.clone().unwrap())
             } else {
                 check_audio_encoding(&args.input_directory.clone())
             };
-            create_torrent(opus_options, encoder_options.clone().unwrap(), &torrent_path.clone().unwrap(), &torrent_files.clone().unwrap(), &args);
+            create_torrent(
+                opus_options,
+                encoder_options.clone().unwrap(),
+                &torrent_path.clone().unwrap(),
+                &torrent_files.clone().unwrap(),
+                &args,
+            );
         }
     }
-    if args.batch &&
-        !args.no_torrent &&
-        torrent_path.clone().is_some() &&
-        torrent_path.clone().unwrap().try_exists().is_ok_and(|b| b == false)
+    if args.batch
+        && !args.no_torrent
+        && torrent_path.clone().is_some()
+        && torrent_path.clone().unwrap().try_exists().is_ok_and(|b| !b)
     {
         let opus_options: String = if src2_paths.is_some() {
             check_audio_encoding(&args.src2_directory.clone().unwrap())
         } else {
             check_audio_encoding(&args.input_directory.clone())
         };
-        create_torrent(opus_options, encoder_options.unwrap(), &torrent_path.unwrap(), &torrent_files.unwrap(), &args);
+        create_torrent(
+            opus_options,
+            encoder_options.unwrap(),
+            &torrent_path.unwrap(),
+            &torrent_files.unwrap(),
+            &args,
+        );
     }
 }
